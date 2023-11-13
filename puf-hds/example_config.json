@@ -1,0 +1,21 @@
+{
+  "name": "Intel Galileo Gen 2",
+  "path": "./enroll_G9_data",
+  "common_prefix": "G9_4",
+  "hds_config": {
+    "name": "G9_HDS.txt",
+    "encoding_repetition": 3
+  },
+  "puf_config": {
+    "size": 2,
+    "unit": "MB",
+    "page_size_bytes": 512,
+    "word_size_bytes": 4
+  },
+  "decay_config": {
+    "decay_time_start": 20,
+    "incremental_step": 10,
+    "num_of_measurements": 9,
+    "replication": 2
+  }
+}
