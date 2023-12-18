@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use rand::distributions::{Distribution, Uniform};
 use rand::prelude::IteratorRandom;
 use rand::seq::SliceRandom;
-
+use rand_seeder::Seeder;
+use rand_pcg::Pcg64;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub enum Sizes { Byte, KB, MB }
@@ -148,7 +149,7 @@ fn write_hds(
 }
 
 fn build_hds(cfg: &Config, stable_cells: &Vec<Vec<Vec<u64>>>) -> Result<(Vec<Vec<u64>>, Vec<i32>), Box<dyn std::error::Error>> {
-    let mut rng = rand::thread_rng();
+    let mut rng: Pcg64 = Seeder::from("test").make_rng();
     let u32_range = Uniform::from(0..i32::MAX);
 
     let mut helper_data_system = vec![
@@ -275,8 +276,8 @@ fn extract_stable_cells(cfg: &Config) -> Result<Vec<Vec<Vec<u64>>>, Box<dyn std:
 fn collect_measurements(cfg: &Config, timeout: i32) -> Result<Vec<File>, Box<dyn std::error::Error>> {
     let mut current_measurements = Vec::new();
 
-    for iter in 0..cfg.decay_config.replication {
-        let path = PathBuf::from(&cfg.path).join(format!("{}_{}_{}sec.bin", cfg.common_prefix, iter, timeout));
+    for iter in 1..=cfg.decay_config.replication {
+        let path = PathBuf::from(&cfg.path).join(format!("{}_{}_{}sec", cfg.common_prefix, iter, timeout));
         current_measurements.push(File::open(path)?);
     }
 
