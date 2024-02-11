@@ -4,7 +4,7 @@
   "common_prefix": "BBB",
   "hds_config": {
     "name": "BBB_HDS.txt",
-    "encoding_repetition": 3
+    "parity_percentage": 30
   },
   "puf_config": {
     "size": 2,

@@ -1,3 +1,5 @@
+mod reed_solomon;
+
 use std::{env, fs, io};
 use std::collections::HashSet;
 use std::fs::File;
@@ -69,8 +71,8 @@ impl PUFConfig {
 pub struct HDSConfig {
     /// Name of the output file.
     pub name: String,
-    /// How many times the same code should be encoded, for robustness.
-    pub encoding_repetition: i32,
+    /// Recover % of the original message
+    pub parity_percentage: i32,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -122,86 +124,143 @@ impl Config {
 
 pub fn generate(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let stable_cells = extract_stable_cells(cfg)?;
-    let (hds, gen_values) = build_hds(cfg, &stable_cells)?;
+    // let (hds, gen_values) = build_hds(cfg, &stable_cells)?;
 
-    let mut output_file = File::create(&cfg.hds_config.name)?;
-    for measurement in 0..(cfg.decay_config.num_of_measurements - 1) as usize {
-        write_hds(&mut output_file, cfg, measurement, &gen_values, &hds)?;
-    }
+    // let mut output_file = File::create(&cfg.hds_config.name)?;
+    // for measurement in 0..(cfg.decay_config.num_of_measurements - 1) as usize {
+    //     write_hds(&mut output_file, cfg, measurement, &gen_values, &hds)?;
+    // }
 
     Ok(())
 }
 
-fn write_hds(
-    output_file: &mut File,
-    cfg: &Config,
-    measurement: usize,
-    gen_values: &[i32],
-    hds: &[Vec<u64>],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let timeout = cfg.decay_config.get_measurement(measurement) + cfg.decay_config.incremental_step / 2;
-    write!(output_file, "{} {} ", timeout.to_string(), if measurement >= gen_values.len() { 0 } else { gen_values[measurement] })?;
-    for i in 0..(32 * cfg.hds_config.encoding_repetition - 1) as usize {
-        write!(output_file, "{} ", hds[measurement][i])?;
-    }
-    write!(output_file, "{}\n", hds[measurement][(cfg.hds_config.encoding_repetition - 1) as usize])?;
-    Ok(())
+// fn write_hds(
+//     output_file: &mut File,
+//     cfg: &Config,
+//     measurement: usize,
+//     gen_values: &[i32],
+//     hds: &[Vec<u64>],
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     let timeout = cfg.decay_config.get_measurement(measurement) + cfg.decay_config.incremental_step / 2;
+//     write!(output_file, "{} {} ", timeout.to_string(), if measurement >= gen_values.len() { 0 } else { gen_values[measurement] })?;
+//     for i in 0..(32 * cfg.hds_config.encoding_repetition - 1) as usize {
+//         write!(output_file, "{} ", hds[measurement][i])?;
+//     }
+//     write!(output_file, "{}\n", hds[measurement][(cfg.hds_config.encoding_repetition - 1) as usize])?;
+//     Ok(())
+// }
+
+// fn build_hds(cfg: &Config, stable_cells: &Vec<Vec<Vec<u64>>>) -> Result<(Vec<Vec<u64>>, Vec<i32>), Box<dyn std::error::Error>> {
+//     let mut rng: Pcg64 = Seeder::from("test").make_rng();
+//     let u32_range = Uniform::from(0..i32::MAX);
+//
+//     let mut helper_data_system = vec![
+//         vec![0u64; cfg.hds_config.encoding_repetition as usize * 32];
+//         cfg.decay_config.num_of_measurements as usize];
+//
+//     let mut rows: HashSet<u32> = (0..cfg.puf_config.num_of_rows()).collect();
+//     let mut generated_values = Vec::new();
+//
+//     for measurement in 0..(cfg.decay_config.num_of_measurements - 2) as usize {
+//         generated_values.push(u32_range.sample(&mut rng));
+//
+//         for rep in 0..cfg.hds_config.encoding_repetition as usize {
+//             for shift in 0..32 {
+//                 let mask: u32 = 1 << shift;
+//
+//                 if *generated_values.last().unwrap() as u32 & mask != 0x0 {
+//                     let mut row: u32;
+//                     loop {
+//                         row = *rows.iter().choose(&mut rng).unwrap();
+//                         if !stable_cells[measurement][row as usize].is_empty() {
+//                             break;
+//                         }
+//                     }
+//                     rows.remove(&row);
+//                     helper_data_system[measurement][shift + rep * 32] = *stable_cells[measurement][row as usize].choose(&mut rng).unwrap();
+//                 } else {
+//                     let mut row: u32;
+//                     loop {
+//                         row = *rows.iter().choose(&mut rng).unwrap();
+//                         if !stable_cells[measurement + 2][row as usize].is_empty() {
+//                             break;
+//                         }
+//                     }
+//                     rows.remove(&row);
+//                     helper_data_system[measurement][shift + rep * 32] = *stable_cells[measurement + 2][row as usize].choose(&mut rng).unwrap();
+//                 }
+//             }
+//         }
+//     }
+//
+//     Ok((helper_data_system, generated_values))
+// }
+
+fn zip_measurements(cfg: &Config) -> Result<Vec<(Vec<File>, Option<Vec<File>>)>, Box<dyn std::error::Error>> {
+    (0..cfg.decay_config.num_of_measurements as usize).map(|measurement| {
+        let timeout = cfg.decay_config.get_measurement(measurement);
+
+        let current_measurements = collect_measurements(cfg, timeout)?;
+        let previous_measurements = if measurement > 0 {
+            collect_measurements(cfg, timeout - cfg.decay_config.incremental_step)?
+        } else {
+            Vec::new()
+        };
+
+        Ok((current_measurements, if previous_measurements.is_empty() { None } else { Some(previous_measurements) }))
+    }).collect()
 }
 
-fn build_hds(cfg: &Config, stable_cells: &Vec<Vec<Vec<u64>>>) -> Result<(Vec<Vec<u64>>, Vec<i32>), Box<dyn std::error::Error>> {
-    let mut rng: Pcg64 = Seeder::from("test").make_rng();
-    let u32_range = Uniform::from(0..i32::MAX);
+fn collect_next_word(measurements: Option<&mut [File]>, word_size: usize) -> io::Result<Vec<u32>> {
+    match measurements {
+        Some(files) => files.iter_mut().map(|m| {
+            let mut buff = Vec::with_capacity(word_size);
+            m.take(word_size as u64).read_to_end(&mut buff)?;
+            u32::from_be_bytes(buff.as_slice().try_into().unwrap())
+        }).collect(),
+        None => Ok(Vec::new()),
+    }
+}
 
-    let mut helper_data_system = vec![
-        vec![0u64; cfg.hds_config.encoding_repetition as usize * 32];
+fn extract_stable_cells_2(cfg: &Config) -> Result<Vec<Vec<Vec<u64>>>, Box<dyn std::error::Error>> {
+    let mut stable_cells = vec![
+        vec![Vec::<u64>::new(); cfg.puf_config.num_of_rows() as usize];
         cfg.decay_config.num_of_measurements as usize];
 
-    let mut rows: HashSet<u32> = (0..cfg.puf_config.num_of_rows()).collect();
-    let mut generated_values = Vec::new();
+    for mut measurement_pair in zip_measurements(cfg)? {
+        // Read all blocks from all of the files.
+        for block in 0..cfg.puf_config.blocks() {
+            let mut current_common_flips: u32 = 0xFFFFFFFF;
+            for word in collect_next_word(Some(&mut measurement_pair.0), cfg.puf_config.word_size_bytes) {
+                // this will take the original mask 0xFFFFFFFF and AND it with first measurement
+                // then the resulting bits are AND with the second measurements and this will
+                // give us stable bit flips found in both measurements.
+                current_common_flips = current_common_flips & word;
+            }
 
-    for measurement in 0..(cfg.decay_config.num_of_measurements - 2) as usize {
-        generated_values.push(u32_range.sample(&mut rng));
+            let mut previous_all_flips: u32 = 0x0;
+            for word in collect_next_word(measurement_pair.1.as_deref_mut(), cfg.puf_config.word_size_bytes) {
+                // this will take the bit flips from the first measurements and then
+                // from the second measurements and we end with the bit flips from all
+                // previous measurements. (Note we don't care about the common bit flips from
+                // the previous measurements.)
+                previous_all_flips = previous_all_flips | word;
+            }
 
-        for rep in 0..cfg.hds_config.encoding_repetition as usize {
-            for shift in 0..32 {
-                let mask: u32 = 1 << shift;
-
-                if *generated_values.last().unwrap() as u32 & mask != 0x0 {
-                    let mut row: u32;
-                    loop {
-                        row = *rows.iter().choose(&mut rng).unwrap();
-                        if !stable_cells[measurement][row as usize].is_empty() {
-                            break;
-                        }
-                    }
-                    rows.remove(&row);
-                    helper_data_system[measurement][shift + rep * 32] = *stable_cells[measurement][row as usize].choose(&mut rng).unwrap();
-                } else {
-                    let mut row: u32;
-                    loop {
-                        row = *rows.iter().choose(&mut rng).unwrap();
-                        if !stable_cells[measurement + 2][row as usize].is_empty() {
-                            break;
-                        }
-                    }
-                    rows.remove(&row);
-                    helper_data_system[measurement][shift + rep * 32] = *stable_cells[measurement + 2][row as usize].choose(&mut rng).unwrap();
-                }
+            // flips only in current decay run.
+            let current_flips = current_common_flips & (!previous_all_flips);
+            if current_flips != 0x0 {
+                panic!("implement me! (refactoring below)")
             }
         }
     }
 
-    Ok((helper_data_system, generated_values))
+    Ok(Vec::new())
 }
 
 fn extract_stable_cells(cfg: &Config) -> Result<Vec<Vec<Vec<u64>>>, Box<dyn std::error::Error>> {
     let mut stable_cells = vec![
         vec![Vec::<u64>::new(); cfg.puf_config.num_of_rows() as usize];
-        cfg.decay_config.num_of_measurements as usize];
-
-    // Used only for debugging.
-    let mut hamming_weights = vec![
-        vec![0u64; cfg.decay_config.replication as usize];
         cfg.decay_config.num_of_measurements as usize];
 
     for measurement in 0..cfg.decay_config.num_of_measurements as usize {
@@ -226,8 +285,6 @@ fn extract_stable_cells(cfg: &Config) -> Result<Vec<Vec<Vec<u64>>>, Box<dyn std:
                 // then the resulting bits are AND with the second measurements and this will
                 // give us stable bit flips found in both measurements.
                 current_common_bit_flips = current_common_bit_flips & word;
-
-                hamming_weights[measurement][i] += hamming::weight(&buff);
             }
 
             let mut previous_bit_flips = 0x0;
