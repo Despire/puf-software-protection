@@ -2,15 +2,15 @@
   "name": "Beagle Bone Black 3c",
   "path": "./enroll_BBB",
   "common_prefix": "BBB",
-  "hds_config": {
-    "name": "BBB_HDS.txt",
+  "enrollment": {
+    "name": "enroll.json",
     "parity_percentage": 30
   },
   "puf_config": {
     "size": 2,
     "unit": "MB",
-    "page_size_bytes": 512,
-    "word_size_bytes": 4
+    "page_size_words": 1024,
+    "bus_width": "BW16"
   },
   "decay_config": {
     "decay_time_start": 20,

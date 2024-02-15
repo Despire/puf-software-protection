@@ -7,6 +7,7 @@ use std::fs::{File, read_to_string};
 use std::fmt;
 use std::io::Read;
 use std::mem::size_of;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 struct ArgError {
@@ -32,13 +33,25 @@ impl std::error::Error for ArgError {
 }
 
 pub struct Config {
-    // hds_scheme that was generated using puf-hds program.
-    pub hds_scheme: String,
+    // enrollments that were generated.
+    pub enrollments: String,
     // raw_puf_response acquired from the given IoT device.
     pub raw_puf_response: Vec<u8>,
     // decay_time is the number of seconds the raw_puf_response
     // decayed for until retrieved the random bits.
     pub decay_time: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Enrollment {
+    #[serde(rename = "decay_time")]
+    decay_time: i32,
+    #[serde(rename = "pointers")]
+    pointers: Vec<u64>,
+    #[serde(rename = "auth_value")]
+    auth_value: u64,
+    #[serde(rename = "parity")]
+    parity: Vec<u16>,
 }
 
 impl Config {
@@ -56,7 +69,7 @@ impl Config {
 
         let scheme = match program_args.next() {
             Some(scheme) => read_to_string(scheme)?,
-            None => return Err(ArgError::new("2nd argument to the program should be the generated HDS scheme."))?
+            None => return Err(ArgError::new("2nd argument to the program should be the generated enrollments."))?
         };
 
         let decay_time = match program_args.next() {
@@ -66,49 +79,40 @@ impl Config {
 
         Ok(Config {
             raw_puf_response: resp,
-            hds_scheme: scheme,
+            enrollments: scheme,
             decay_time,
         })
     }
 
     pub fn verify(&self) -> bool {
-        for line in self.hds_scheme.lines() {
-            let mut ecc: [u32; 3] = [0x0, 0x0, 0x0];
+        let enrollments: Vec<Enrollment> = serde_json::from_str(&self.enrollments).expect("failed to parse enrollments");
 
-            let pointers = line.split_ascii_whitespace().map(|i| i.parse::<u32>().unwrap()).collect::<Vec<u32>>();
-
-            let target = pointers[1];
-            let timing = pointers[0];
-
-            if timing.abs_diff(self.decay_time as u32) > 5 {
+        for e in enrollments {
+            if e.decay_time != self.decay_time as i32 {
                 continue;
             }
 
-            for (i, ptr) in pointers.iter().skip(2).enumerate() {
-                let block = ptr >> 5;
-                let mask = ptr & 0x1f;
+            let mut reconstructed: u64 = 0x0;
 
-                let offset = block as usize * size_of::<u32>();
-                let puf_value_at_block = u32::from_be_bytes([
+            for (i, ptr) in e.pointers.iter().enumerate() {
+                // except a 2byte blocks were used.
+                let block = ptr >> 4;
+                let mask = ptr & 0xf;
+
+                let offset = block as usize * size_of::<u16>();
+                let puf_value_at_block = u16::from_be_bytes([
                     self.raw_puf_response[offset],
-                    self.raw_puf_response[offset + 1],
-                    self.raw_puf_response[offset + 2],
-                    self.raw_puf_response[offset + 3]
+                    self.raw_puf_response[offset + 1]
                 ]);
 
                 let bit = puf_value_at_block & (1 << mask);
-                if bit != 0x0 {
-                    ecc[i / 32] = ecc[i / 32] | (1 << i as u32 % 32u32);
+                if bit != 0 {
+                    reconstructed |= (1 << i as u64);
                 }
             }
 
-            let ecc_result = (ecc[0] | ecc[1] | ecc[2]) ^
-                (ecc[0] & ecc[1] & ecc[2]) ^
-                (ecc[0] ^ ecc[1] ^ ecc[2]);
-
-            println!("ecc: {}", ecc_result);
-            if target != ecc_result {
-                return false;
+            if reconstructed != e.auth_value {
+                return false
             }
         }
 

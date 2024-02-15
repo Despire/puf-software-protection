@@ -31,7 +31,7 @@
 #define REFRESH_PERIOD          55                            // Refresh period for custom SDRAM refresh.
 #define DISABLE_REFRESH         BIT(31)                       // Bit to flip to disable/enable SDRAM refresh.
 
-#define ROW_SIZE                sizeof(unsigned int) * (1<<9) // word_size * page size
+#define ROW_SIZE                2 * (1<<10)                   // bus_width * page_size
 #define DEVICE_NAME             "puf"
 
 typedef unsigned char uint8_t;
