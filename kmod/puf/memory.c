@@ -49,4 +49,17 @@ int phys_w32(uint32_t addr, uint32_t value) {
 
     return 0;
 }
+
+int phys_r16(uint32_t addr, uint16_t *out) {
+    uint16_t *virt_addr = (uint16_t *) phys_to_virt(addr);
+    if (!virt_addr) {
+        printk(KERN_ERR "failed to read physical address=0x%08x\n", addr);
+        return -1;
+    }
+
+    *out = *virt_addr;
+
+    return 0;
+}
+
 #pragma GCC pop_options

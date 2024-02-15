@@ -5,8 +5,9 @@ use enroll::DRAMCells;
 
 use std::{env, fs, io, u64};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
+use crate::enroll::Enrollment;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub enum Sizes { Byte, KB, MB }
@@ -101,6 +102,10 @@ pub struct EnrollmentConfig {
     pub name: String,
     /// Recover % of the original message
     pub parity_percentage: usize,
+    /// This is a request from the user that can be later used when patching the binary.
+    /// It indicates which timeouts in which order should be executed in the control flow
+    /// of the patched binary.
+    pub timeout_requests: Vec<u32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -150,6 +155,12 @@ impl Config {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct EnrollData {
+    requests: Vec<u32>,
+    enrollments: Vec<Enrollment>,
+}
+
 pub fn generate(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let cells = extract_cells(cfg)?;
 
@@ -162,16 +173,20 @@ pub fn generate(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         println!("\t unstable_cells(across all measurements, not present in previous decay timeout): {}", unstable_cells_count);
         println!("\t stable_0_cells(common to all measurements): {}", stable_0_cells_count);
 
-        let enough_entropy = (stable_cells_count > 64) && (stable_0_cells_count > 64);
-        println!("\t able to generate 64bit random value using DRAM cells: {}", if enough_entropy { "yes" } else { "no " });
+        let enough_entropy = (stable_cells_count > 32) && (stable_0_cells_count > 32);
+        println!("\t able to generate 32bit random value using DRAM cells: {}", if enough_entropy { "yes" } else { "no " });
         if !enough_entropy {
-            return Err(format!("measurement {} has not enough stable cells to encode a 64bit value", cfg.decay_config.get_measurement(i)))?;
+            return Err(format!("measurement {} has not enough stable cells to encode a 32bit value", cfg.decay_config.get_measurement(i)))?;
         }
     }
 
-    let enrollments = enroll::prepare(&cfg, cells)?;
+    let data = EnrollData {
+        enrollments: enroll::prepare(&cfg, cells)?,
+        requests: cfg.enrollment.timeout_requests.clone(),
+    };
+
     let output_file = File::create(&cfg.enrollment.name)?;
-    serde_json::to_writer_pretty(output_file, &enrollments)?;
+    serde_json::to_writer_pretty(output_file, &data)?;
 
     Ok(())
 }
@@ -212,9 +227,9 @@ fn extract_cells(cfg: &Config) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>,
     measurements(cfg)?
         .iter_mut()
         .map(|pair| {
-            let mut stable_1_cells = vec![Vec::<u64>::new(); cfg.puf_config.num_of_rows()];
-            let mut stable_0_cells = vec![Vec::<u64>::new(); cfg.puf_config.num_of_rows()];
-            let mut unstable_cells = vec![Vec::<u64>::new(); cfg.puf_config.num_of_rows()];
+            let mut stable_1_cells = vec![Vec::<u32>::new(); cfg.puf_config.num_of_rows()];
+            let mut stable_0_cells = vec![Vec::<u32>::new(); cfg.puf_config.num_of_rows()];
+            let mut unstable_cells = vec![Vec::<u32>::new(); cfg.puf_config.num_of_rows()];
 
             // Read all blocks from all of the files.
             for block in 0..cfg.puf_config.blocks() {
@@ -237,7 +252,7 @@ fn extract_cells(cfg: &Config) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>,
                     (0..cfg.puf_config.bus_width.as_word_in_bits())
                         .filter(|shift| current_flips & (1 << shift) != 0x0)
                         .for_each(|shift| {
-                            let ptr = (block as u64) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u64;
+                            let ptr = (block as u32) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u32;
                             let row_index = block / cfg.puf_config.page_size_words;
                             stable_1_cells[row_index].push(ptr);
                         });
@@ -247,7 +262,7 @@ fn extract_cells(cfg: &Config) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>,
                     (0..cfg.puf_config.bus_width.as_word_in_bits())
                         .filter(|shift| current_common_non_flips & (1 << shift) != 0x0)
                         .for_each(|shift| {
-                            let ptr = (block as u64) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u64;
+                            let ptr = (block as u32) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u32;
                             let row_index = block / cfg.puf_config.page_size_words;
                             stable_0_cells[row_index].push(ptr);
                         });
@@ -258,7 +273,7 @@ fn extract_cells(cfg: &Config) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>,
                     (0..cfg.puf_config.bus_width.as_word_in_bits())
                         .filter(|shift| unstable_flips & (1 << shift) != 0x0)
                         .for_each(|shift| {
-                            let ptr = (block as u64) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u64;
+                            let ptr = (block as u32) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u32;
                             let row_index = block / cfg.puf_config.page_size_words;
                             unstable_cells[row_index].push(ptr);
                         })

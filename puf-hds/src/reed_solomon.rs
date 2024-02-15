@@ -1,4 +1,4 @@
-use libc::{c_int, uint8_t, uint16_t};
+use libc::c_int;
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -17,11 +17,11 @@ pub struct C_RsControl {
     /// @nn: Symbols per block (= (1<<mm)-1)
     nn: c_int,
     /// @alpha_to: log lookup table
-    alpha_to: *mut uint16_t,
+    alpha_to: *mut u16,
     /// @index_of: Antilog lookup table
-    index_of: *mut uint16_t,
+    index_of: *mut u16,
     /// @genpoly: Generator polynomial
-    genpoly: *mut uint16_t,
+    genpoly: *mut u16,
     /// @nroots: Number of generator roots = number of parity symbols
     nroots: c_int,
     /// @fcr: First consecutive root, index form
@@ -42,7 +42,7 @@ pub struct C_RsControl {
 
 extern "C" {
     fn init_rs(symsize: c_int, gfpoly: c_int, fcr: c_int, prim: c_int, nroots: c_int) -> *mut C_RsControl;
-    fn encode_rs8(rs: *mut C_RsControl, data: *mut uint8_t, len: c_int, par: *mut uint16_t, invmsk: uint16_t) -> c_int;
+    fn encode_rs8(rs: *mut C_RsControl, data: *mut u8, len: c_int, par: *mut u16, invmsk: u16) -> c_int;
     fn free_rs(rs_control: *mut C_RsControl);
 }
 

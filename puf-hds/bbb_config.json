@@ -2,10 +2,6 @@
   "name": "Beagle Bone Black 3c",
   "path": "./enroll_BBB",
   "common_prefix": "BBB",
-  "enrollment": {
-    "name": "enroll.json",
-    "parity_percentage": 30
-  },
   "puf_config": {
     "size": 2,
     "unit": "MB",
@@ -17,5 +13,15 @@
     "incremental_step": 10,
     "num_of_measurements": 5,
     "replication": 6
+  },
+  "enrollment": {
+    "name": "enroll.json",
+    "parity_percentage": 30,
+    "timeout_requests": [
+      20,
+      30,
+      20,
+      40
+    ]
   }
 }

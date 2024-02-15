@@ -49,9 +49,15 @@ pub struct Enrollment {
     #[serde(rename = "pointers")]
     pointers: Vec<u64>,
     #[serde(rename = "auth_value")]
-    auth_value: u64,
+    auth_value: u32,
     #[serde(rename = "parity")]
     parity: Vec<u16>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct EnrollData {
+    enrollments: Vec<Enrollment>,
+    requests: Vec<u32>,
 }
 
 impl Config {
@@ -85,17 +91,17 @@ impl Config {
     }
 
     pub fn verify(&self) -> bool {
-        let enrollments: Vec<Enrollment> = serde_json::from_str(&self.enrollments).expect("failed to parse enrollments");
+        let data: EnrollData = serde_json::from_str(&self.enrollments).expect("failed to parse enrollments");
 
-        for e in enrollments {
+        for e in data.enrollments {
             if e.decay_time != self.decay_time as i32 {
                 continue;
             }
 
-            let mut reconstructed: u64 = 0x0;
+            let mut reconstructed: u32 = 0x0;
 
             for (i, ptr) in e.pointers.iter().enumerate() {
-                // except a 2byte blocks were used.
+                // expect 2byte blocks were used.
                 let block = ptr >> 4;
                 let mask = ptr & 0xf;
 
@@ -107,12 +113,14 @@ impl Config {
 
                 let bit = puf_value_at_block & (1 << mask);
                 if bit != 0 {
-                    reconstructed |= (1 << i as u64);
+                    reconstructed |= 1 << i as u32;
                 }
             }
 
+            // TODO: add ecc using parity values.
+
             if reconstructed != e.auth_value {
-                return false
+                return false;
             }
         }
 
