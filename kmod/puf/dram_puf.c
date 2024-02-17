@@ -40,6 +40,7 @@ typedef int error;
 //        Reed Solomon ECC   .     //
 ////////////////////////////////////
 #define CONFIG_REED_SOLOMON_ENC8
+#define CONFIG_REED_SOLOMON_DEC8
 #include "ecc/reed_solomon.c"
 
 /////////////////////////////////////
@@ -53,15 +54,14 @@ typedef int error;
 #include "memory.c"
 
 /////////////////////////////////////
-//          Register Device.       //
-////////////////////////////////////
-#include "device.c"
-
-/////////////////////////////////////
 //          PUF related code.      //
 ////////////////////////////////////
 #include "puf_ops.c"
 
+/////////////////////////////////////
+//          Register Device.       //
+////////////////////////////////////
+#include "device.c"
 
 void deinit_puf_buffer(void) {
     if (puf_addr) {
@@ -76,6 +76,11 @@ int init_puf_buffer(void) {
 
     if (puf_size % ROW_SIZE != 0) {
         printk(KERN_ERR "puf_size needs to be multiple of row size (%d)\n", ROW_SIZE);
+        return -ENOMEM;
+    }
+
+    if (puf_size == 0) {
+        printk(KERN_ERR "puf_size needs to be non-empty\n");
         return -ENOMEM;
     }
 
@@ -111,7 +116,7 @@ static int __init puf_start(void) {
 
 static void __exit puf_end(void) {
     stop_temp_polling();
-    end_puf();
+    device_cleanup();
     if (puf_addr) {
         misc_deregister(&puf_device);
     }
