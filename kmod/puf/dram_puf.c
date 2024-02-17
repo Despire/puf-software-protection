@@ -111,6 +111,7 @@ static int __init puf_start(void) {
 
 static void __exit puf_end(void) {
     stop_temp_polling();
+    end_puf();
     if (puf_addr) {
         misc_deregister(&puf_device);
     }

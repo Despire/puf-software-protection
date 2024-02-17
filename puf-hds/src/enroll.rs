@@ -41,8 +41,9 @@ pub fn prepare(cfg: &Config, dram_cells: Vec<(DRAMCells, DRAMCells, DRAMCells)>)
 
             let mut pointers = Vec::new();
 
+            const AUTH_VALUE_SIZE: usize = std::mem::size_of::<u32>() * 8;
             let auth_value = u32_range.sample(&mut rng);
-            for shift in 0..32 {
+            for shift in 0..AUTH_VALUE_SIZE {
                 let bit = 1 << shift;
                 if bit & auth_value != 0x0 {
                     pointers.push(dram_1_pointers.pop().unwrap());
@@ -51,14 +52,16 @@ pub fn prepare(cfg: &Config, dram_cells: Vec<(DRAMCells, DRAMCells, DRAMCells)>)
                 }
             }
 
-            let mut parity = vec![0u16; (32. * (cfg.enrollment.parity_percentage as f64 / 100.)) as usize];
+            let mut data = [0u8; AUTH_VALUE_SIZE];
+            for i in 0..AUTH_VALUE_SIZE {
+                data[i] = (auth_value & (1 << ((AUTH_VALUE_SIZE - 1) - i))) as u8;
+            }
+            let mut parity = vec![0u16; (AUTH_VALUE_SIZE as f64 * (cfg.enrollment.parity_percentage as f64 / 100.)) as usize];
 
             let control_ptr = reed_solomon::init(&parity);
             if control_ptr.is_null() {
                 return Err("failed to initialize reed solomon encoder")?;
             }
-
-            let mut data = auth_value.to_be_bytes();
             if reed_solomon::encode(control_ptr, &mut data, &mut parity) != 0 {
                 return Err("failed to encode data using reed solomon")?;
             }

@@ -45,7 +45,7 @@ static int puf_release(struct inode * inode, struct file *file) {
         printk(KERN_INFO "freeing enrollment_data\n");
         kfree(enrollment_data);
         enrollment_data = 0x0;
-        enrollment_ptr = 0x0;
+        enrollment_ptr  = 0x0;
     }
     puf_state = PUF_UNUSED;
     printk(KERN_INFO "PUF is now unused");
@@ -53,16 +53,20 @@ static int puf_release(struct inode * inode, struct file *file) {
 }
 
 static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_t *ppos) {
-    uint32_t i = 0;
-    uint32_t response = 0x0;
-    uint32_t block_ptr = 0x0;
-    uint32_t block = 0x0;
-    uint32_t mask = 0x0;
-    uint16_t memory = 0x0;
-    uint32_t memory_offset = 0x0;
-    uint8_t  bit = 0x0;
+    uint32_t  i                  = 0;
+    uint32_t  response           = 0x0;
+    uint32_t  block_ptr          = 0x0;
+    uint32_t  block              = 0x0;
+    uint32_t  mask               = 0x0;
+    uint16_t  memory             = 0x0;
+    uint32_t  memory_offset      = 0x0;
+    uint8_t   parity             = 0x0;
+    uint16_t* parity_array       = 0x0;
+    uint8_t   recovered_bits[32] = {0x0};
 
     if (puf_state == PUF_WAITING_FOR_READ) {
+        parity = consume_parity_be(&enrollment_ptr, enrollment_data);
+        parity_array = (uint8_t *) kzalloc(parity * sizeof(uint16_t), GFP_KERNEL);
         for (i = 0; i < 32; i++) {
             block_ptr = consume_block_ptr_be(&enrollment_ptr, enrollment_data);
 
@@ -72,18 +76,31 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
             memory_offset = block * sizeof(uint16_t);
             if (phys_r16(puf_phys_addr + memory_offset, &memory) != 0) {
                 printk(KERN_ERR "failed to read physical RAM, aborting PUF read\n");
+                kfree(parity_array);
+                start_next_timeout();
                 return -EFAULT;
             }
 
-            bit = memory & (1 << mask);
-            if (bit != 0x0) {
+            recovered_bits[i] = memory & (1 << mask);
+        }
+
+        if (decode_rs8(rs_ctrl, recovered_bits, parity_array, 32, NULL, 0, NULL, 0, NULL) < 0) {
+            printk(KERN_ERR "failed to apply ECC\n");
+            kfree(parity_array);
+            start_next_timeout();
+            return -EFAULT;
+        }
+
+        for (i = 0; i < 32; i++) {
+            if (recovered_bits[i] != 0x0) {
                 response |= 1 << i;
             }
         }
 
-        // TODO: perform ECC on the response (needs parity bits alongside the enrollment).
         if (copy_to_user(buf, &response, sizeof(uint32_t)) != 0) {
             printk(KERN_ERR "failed to give response back to user\n");
+            kfree(parity_array);
+            start_next_timeout();
             return -EFAULT;
         }
 
@@ -117,18 +134,13 @@ static ssize_t puf_write(struct file *file, const char __user *buf, size_t count
     printk(KERN_CONT "\n");
 
     // Enrollment consists of multiple decay timeouts
-    // and for each of them 32 pointers each 32bits wide is passed.
+    // of the following format
+    // |(16bit)timeout|(8bit)parity-bit-count|(16bit)16 integers|(32bit) 32 integers
     // Example:
-    // 10 32-(32bits) integers
-    // 20 32-(32bits) integers
+    // 10|3|3-(16bits)integers|32-(32bits) integers
+    // 20|3|3-(16bits)integers|32-(32bits) integers
     // ...
     if (puf_state == PUF_WAITING_FOR_ENROLLMENT) {
-        // we have 2 bytes for the timeout and 4 bytes for the pointers
-        // the length of the enrollment devided by 32 should be either 0 or 16.
-        if (!(count % (ENROLLMENT_POINTER_BYTES * 8) == 0 || count % (ENROLLMENT_POINTER_BYTES * 8) == 16)) {
-            printk(KERN_ERR "invalid enrollment data\n");
-            return -EFAULT;
-        }
         printk(KERN_INFO "received enrollment data\n");
         enrollment_data = (uint8_t *) kzalloc(count + ENROLLMENT_TIMEOUT_BYTES, GFP_KERNEL); // +extra bytes for signaling a timeout of 0 (i.e EOF).
         if (!enrollment_data) {

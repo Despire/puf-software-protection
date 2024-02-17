@@ -20,6 +20,7 @@
 // to be read the the process.
 #define PUF_WAITING_FOR_READ       0x3
 
+#define ENROLLMENT_PARITY_BYTES  1
 #define ENROLLMENT_TIMEOUT_BYTES 2
 #define ENROLLMENT_POINTER_BYTES 4
 
@@ -48,4 +49,13 @@ uint32_t consume_block_ptr_be(uint8_t *ptr, uint8_t *enrollment_data) {
     block_ptr = ((uint16_t) fourth_byte << 24) | (third_byte << 16) | (second_byte << 8) | first_byte;
 
     return block_ptr;
+}
+
+uint8_t consume_parity_be(uint8_t *ptr, uint8_t *enrollment_data) {
+    uint8_t parity = 0x0;
+
+    parity = enrollment_data[*ptr];
+    *ptr += ENROLLMENT_PARITY_BYTES;
+
+    return parity;
 }
