@@ -112,13 +112,16 @@ impl Config {
                 ]);
 
                 let bit = puf_value_at_block & (1 << mask);
-                if bit != 0 {
-                    reconstructed |= 1 << i as u32;
+                if bit != 0x0 {
+                    reconstructed = reconstructed | (1 << 31 - i);
                 }
             }
 
             // TODO: add ecc using parity values.
 
+            println!();
+            println!("reconstructed: {:b}", reconstructed);
+            println!("want:          {:b}", e.auth_value);
             if reconstructed != e.auth_value {
                 return false;
             }

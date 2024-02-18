@@ -44,18 +44,25 @@ pub fn prepare(cfg: &Config, dram_cells: Vec<(DRAMCells, DRAMCells, DRAMCells)>)
             const AUTH_VALUE_SIZE: usize = std::mem::size_of::<u32>() * 8;
             let auth_value = u32_range.sample(&mut rng);
             for shift in 0..AUTH_VALUE_SIZE {
-                let bit = 1 << shift;
-                if bit & auth_value != 0x0 {
+                let bit = auth_value >> ((AUTH_VALUE_SIZE - 1) - shift) & 0x1;
+                if bit != 0x0 {
                     pointers.push(dram_1_pointers.pop().unwrap());
                 } else {
                     pointers.push(dram_0_pointers.pop().unwrap());
                 }
             }
 
+            println!("encoding: {:b}", auth_value);
             let mut data = [0u8; AUTH_VALUE_SIZE];
             for i in 0..AUTH_VALUE_SIZE {
-                data[i] = (auth_value & (1 << ((AUTH_VALUE_SIZE - 1) - i))) as u8;
+                let bit = (auth_value >> ((AUTH_VALUE_SIZE - 1) - i)) & 0x1;
+                if bit != 0x0 {
+                    data[i] = 1;
+                }
             }
+            data.iter().for_each(|bit| {
+                print!("{}", bit);
+            });
             let mut parity = vec![0u16; (AUTH_VALUE_SIZE as f64 * (cfg.enrollment.parity_percentage as f64 / 100.)) as usize];
 
             let control_ptr = reed_solomon::init(&parity);

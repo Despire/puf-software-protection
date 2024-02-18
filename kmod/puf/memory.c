@@ -50,14 +50,18 @@ int phys_w32(uint32_t addr, uint32_t value) {
     return 0;
 }
 
-int phys_r16(uint32_t addr, uint16_t *out) {
-    uint16_t *virt_addr = (uint16_t *) phys_to_virt(addr);
+int va_phys_r16_be(uint32_t addr, uint16_t *out) {
+    uint8_t first, second;
+    uint8_t *virt_addr = (uint8_t *) __va(addr);
     if (!virt_addr) {
-        printk(KERN_ERR "failed to read physical address=0x%08x\n", addr);
+	printk(KERN_ERR "failed to read physical address=0x%08x\n", addr);
         return -1;
     }
 
-    *out = *virt_addr;
+    first = *virt_addr;
+    second = *(virt_addr + 1);
+
+    *out = (((uint16_t) first) << 8) | second;
 
     return 0;
 }

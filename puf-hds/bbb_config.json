@@ -11,7 +11,7 @@
   "decay_config": {
     "decay_time_start": 20,
     "incremental_step": 10,
-    "num_of_measurements": 5,
+    "num_of_measurements": 1,
     "replication": 6
   },
   "enrollment": {

@@ -36,6 +36,8 @@ typedef unsigned char uint8_t;
 typedef unsigned int uint32_t;
 typedef int error;
 
+bool user_supplied_address = false;
+
 /////////////////////////////////////
 //        Reed Solomon ECC   .     //
 ////////////////////////////////////
@@ -72,15 +74,8 @@ void deinit_puf_buffer(void) {
 }
 
 int init_puf_buffer(void) {
-    error err;
-
     if (puf_size % ROW_SIZE != 0) {
         printk(KERN_ERR "puf_size needs to be multiple of row size (%d)\n", ROW_SIZE);
-        return -ENOMEM;
-    }
-
-    if (puf_size == 0) {
-        printk(KERN_ERR "puf_size needs to be non-empty\n");
         return -ENOMEM;
     }
 
@@ -90,10 +85,45 @@ int init_puf_buffer(void) {
         return -ENOMEM;
     }
 
+    puf_phys_addr = virt_to_phys((void *) puf_addr);
+
     printk(KERN_INFO "Allocated %zu bytes of physically contiguous memory\n", puf_size);
 
+    return 0;
+}
+
+static int __init puf_start(void) {
+    error err;
+
+    INIT_DELAYED_WORK(&work_sdram, sdram_refresh);
+    INIT_DELAYED_WORK(&work_temp_poll, temp_polling);
+    INIT_DELAYED_WORK(&work_stop_puf, stop_puf);
+
+    if (puf_size == 0) {
+        printk(KERN_ERR "puf_size needs to be non-empty\n");
+        return -ENOMEM;
+    }
+
+    // if the phys address is not allocated by the user
+    // allocate a buffer.
+    if (puf_phys_addr == 0x0) {
+        init_puf_buffer();
+    } else {
+	user_supplied_address = true;    
+	puf_addr = phys_to_virt(puf_phys_addr);
+	if (!puf_addr) {
+		printk(KERN_ERR "failed to translate physical address to virtual\n");
+		return -EFAULT;
+	}
+    }
+
+    // zero-out PUF buffer.
     memset(puf_addr, 0, puf_size);
 
+    printk(KERN_INFO "PUF virtual address: %lx\n", (long unsigned int) puf_addr);
+    printk(KERN_INFO "PUF physical address: %llx\n", (unsigned long long) puf_phys_addr);
+
+    // create device.
     err = misc_register(&puf_device);
     if (err) {
         pr_err("Failed to register puf device\n");
@@ -101,15 +131,7 @@ int init_puf_buffer(void) {
         return err;
     }
 
-    return 0;
-}
-
-static int __init puf_start(void) {
-    INIT_DELAYED_WORK(&work_sdram, sdram_refresh);
-    INIT_DELAYED_WORK(&work_temp_poll, temp_polling);
-    INIT_DELAYED_WORK(&work_stop_puf, stop_puf);
-
-    init_puf_buffer();
+    // capture temparature
     start_temp_polling();
     return 0;
 }
@@ -117,10 +139,10 @@ static int __init puf_start(void) {
 static void __exit puf_end(void) {
     stop_temp_polling();
     device_cleanup();
-    if (puf_addr) {
-        misc_deregister(&puf_device);
+    misc_deregister(&puf_device);
+    if (!user_supplied_address) {
+        deinit_puf_buffer();
     }
-    deinit_puf_buffer();
 }
 
 module_init(puf_start);
