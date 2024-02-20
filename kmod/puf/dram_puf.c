@@ -109,14 +109,13 @@ static int __init puf_start(void) {
     if (puf_phys_addr == 0x0) {
         init_puf_buffer();
     } else {
-	user_supplied_address = true;    
-	puf_addr = phys_to_virt(puf_phys_addr);
-	if (!puf_addr) {
-		printk(KERN_ERR "failed to translate physical address to virtual\n");
-		return -EFAULT;
-	}
+        user_supplied_address = true;    
+        puf_addr = phys_to_virt(puf_phys_addr);
+        if (!puf_addr) {
+            printk(KERN_ERR "failed to translate physical address to virtual\n");
+            return -EFAULT;
+        }
     }
-
     // zero-out PUF buffer.
     memset(puf_addr, 0, puf_size);
 

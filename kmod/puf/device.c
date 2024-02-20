@@ -95,11 +95,12 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
     if (puf_state == PUF_WAITING_FOR_READ) {
         parity = consume_8bits_be(&enrollment_ptr, enrollment_data);
         parity_array = (uint16_t *) kzalloc(parity * sizeof(uint16_t), GFP_KERNEL);
-	rs_ctrl = init_rs(8, 0x11d, 0, 1, parity); // use same params as when encoding.
-	for (i= 0; i < parity; i++) {
-	    parity_array[i] = consume_16bits_be(&enrollment_ptr, enrollment_data);
-	    printk(KERN_INFO "debug: parity[%d]:%d\n", i, parity_array[i]);
-	}
+        rs_ctrl = init_rs(8, 0x11d, 0, 1, parity); // use same params as when encoding.
+
+        for (i= 0; i < parity; i++) {
+            parity_array[i] = consume_16bits_be(&enrollment_ptr, enrollment_data);
+            printk(KERN_INFO "debug: parity[%d]:%d\n", i, parity_array[i]);
+        }
 
         for (i = 0; i < 32; i++) {
             block_ptr = consume_32bits_be(&enrollment_ptr, enrollment_data);
@@ -108,55 +109,55 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
             mask = block_ptr & 0xf;
             memory_offset = block * sizeof(uint16_t);
 
-	    printk(KERN_INFO "debug: block:%d mask: %d ptr: %d memoffset: %d", block, mask, block_ptr, memory_offset);
+            printk(KERN_INFO "debug: block:%d mask: %d ptr: %d memoffset: %d", block, mask, block_ptr, memory_offset);
 
             if (va_phys_r16_be(puf_phys_addr + memory_offset, &memory) != 0) {
                 printk(KERN_ERR "failed to read physical RAM, aborting PUF read\n");
                 kfree(parity_array);
-		free_rs(rs_ctrl);
+                free_rs(rs_ctrl);
                 start_next_timeout();
                 return -EFAULT;
             }
 
-	    printk(KERN_CONT " value at address:%d\n", memory);
+            printk(KERN_CONT " value at address:%d\n", memory);
 
-	    if ((memory & (1 << mask)) != 0x0) {
-	        recovered_bits[i] = 0x1;
-	    }
+            if ((memory & (1 << mask)) != 0x0) {
+                recovered_bits[i] = 0x1;
+            }
         }
 
-	printk(KERN_INFO "debug: recovered bits - ");
-	for (i = 0; i < 32; i++) {
-		printk(KERN_CONT " %02x", recovered_bits[i]);
-	}
-	printk(KERN_CONT "\n");
+        printk(KERN_INFO "debug: recovered bits - ");
+        for (i = 0; i < 32; i++) {
+            printk(KERN_CONT " %02x", recovered_bits[i]);
+        }
+        printk(KERN_CONT "\n");
 
-	// TODO: handle error correctly.
+        // TODO: handle error correctly.
         if (decode_rs8(rs_ctrl, recovered_bits, parity_array, 32, NULL, 0, NULL, 0, NULL) < 0) {
             printk(KERN_ERR "failed to apply ECC\n");
             kfree(parity_array);
-	    free_rs(rs_ctrl);
+            free_rs(rs_ctrl);
             start_next_timeout();
             return -EFAULT;
         }
 
-	// debug print
-	printk(KERN_INFO "bits after ECC: ");
-	for (i = 0; i < 32; i++) {
-		printk(KERN_CONT " %02x", recovered_bits[i]);
-	}
-	printk(KERN_CONT "\n");
+        // debug print
+        printk(KERN_INFO "bits after ECC: ");
+        for (i = 0; i < 32; i++) {
+            printk(KERN_CONT " %02x", recovered_bits[i]);
+        }
+        printk(KERN_CONT "\n");
 
         for (i = 0; i < 32; i++) {
-	    if (recovered_bits[i] != 0x0) {
-	        response |= (1 << (31 - i));
-	    }
+            if (recovered_bits[i] != 0x0) {
+                response |= (1 << (31 - i));
+            }
         }
 
         if (copy_to_user(buf, &response, sizeof(uint32_t)) != 0) {
             printk(KERN_ERR "failed to give response back to user\n");
             kfree(parity_array);
-	    free_rs(rs_ctrl);
+            free_rs(rs_ctrl);
             start_next_timeout();
             return -EFAULT;
         }
