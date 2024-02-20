@@ -1,3 +1,18 @@
+// PUF is in unused state.
+// It completed all the decay requests from a program
+// and waits for another program.
+#define PUF_UNUSED   0x0
+// PUF is in a decay state.
+// After the the requested decay timeout times outs
+// the PUF will be back in IDLE state.
+#define PUF_DECAYING 0x1
+// PUF was registerd with a certain PID, but
+// is waiting for the enrollment data before starting.
+#define PUF_WAITING_FOR_ENROLLMENT 0x2
+// PUF was successfully generated and is waiting
+// to be read the the process.
+#define PUF_WAITING_FOR_READ       0x3
+
 unsigned int PID              = 0;
 uint8_t      puf_state        = PUF_UNUSED;
 uint8_t*     enrollment_data  = 0x0;
