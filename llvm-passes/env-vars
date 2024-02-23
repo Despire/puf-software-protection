@@ -1,0 +1,5 @@
+#!/bin/bash
+
+export llvm_path="/opt/homebrew/Cellar/llvm/17.0.6"
+export llvm_interpreter="/opt/homebrew/opt/llvm@17/bin/lli"
+export llvm_linker="/opt/homebrew/opt/llvm@17/bin/llc"
