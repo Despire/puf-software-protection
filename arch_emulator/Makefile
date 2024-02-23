@@ -4,7 +4,7 @@ DOCKERFILE_PATH = ./Dockerfile
 all: build
 
 run:
-	docker run -it -v ./volume:/project bbb-cpu-arch
+	docker run -it -d -v ./volume:/project bbb-cpu-arch
 build:
 	docker build -t $(IMAGE_NAME) -f $(DOCKERFILE_PATH) .
 
