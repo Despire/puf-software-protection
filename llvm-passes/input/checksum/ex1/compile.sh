@@ -24,7 +24,7 @@ rm ${output_path}/*no-opt*
 find ${output_path} -type f | grep -v "rcgu" | xargs rm
 
 find ${output_path}/ -name '*.ll' | while read -r file; do
-  ${llvm_path}/bin/opt -load-pass-plugin ./cmake-build-debug/lib/libPufParser.dylib -passes=pufparser -enrollment=$(pwd)/input/puf-parser/ex1/enroll.json -S ${file} -o ${file}
+  ${llvm_path}/bin/opt -load-pass-plugin ./cmake-build-debug/lib/libChecksum.dylib -passes=checksum -S ${file} -o ${file}
 done
 
 find ${output_path}/ -name '*.ll' | xargs -n 1 ${llvm_path}/bin/llvm-as

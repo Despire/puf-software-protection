@@ -27,7 +27,9 @@ llvm::PreservedAnalyses PufParser::run(llvm::Module &M, llvm::ModuleAnalysisMana
             LLVM_CONST_I32(ctx, 0), "puf_fd"
     );
 
+    // open the /dev/puf in a ctor
     puf_open_ctor(M, fdGlobal);
+    // close /dev/puf in a dtor
     puf_close_dtor(M, fdGlobal);
 
     return llvm::PreservedAnalyses::none();
