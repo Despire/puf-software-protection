@@ -1,15 +1,58 @@
 #ifndef LLVM_PUF_CHECKSUM_H
 #define LLVM_PUF_CHECKSUM_H
 
+#include <unordered_map>
+
 #include "Utils.h"
+#include "Crossover.h"
 
 #include "llvm/IR/PassManager.h"
 #include "llvm/Pass.h"
 
-struct Checksum : public llvm::PassInfoMixin<Checksum> {
-  llvm::PreservedAnalyses run(llvm::Module &M, llvm::ModuleAnalysisManager &);
+#define PARITY_INSTRUCTION ".byte 00, 01, 02, 03"
+#define PARITY_INSTRUCTION_INT 66051
 
-  void link_with_hash(llvm::Module &M, std::string&) noexcept;
+struct Checksum : public llvm::PassInfoMixin<Checksum> {
+    llvm::PreservedAnalyses run(llvm::Module &M, llvm::ModuleAnalysisManager &);
+
+    void link_with_hash(llvm::Module &M, std::string &) noexcept;
+
+    void write_func_requests(const std::string &outfile, const std::vector<std::string> &funcs) noexcept;
+
+    std::unordered_map<std::string, Function> read_func_metadata(const std::string &infile);
+
+    std::string calculate_parity(
+            llvm::Function *F,
+            const Function &FuncMetadata
+    );
+
+    void empty_checksum(
+            llvm::LLVMContext &ctx,
+            llvm::Module &M,
+            const std::string &hashFunc,
+            llvm::Function *function,
+            const std::vector<llvm::Function *> &targetFuncs
+    );
+
+    void final_checksum(
+            llvm::LLVMContext &ctx,
+            llvm::Module &M,
+            const std::string &hashFunc,
+            llvm::Function *function,
+            const std::vector<llvm::Function *> &targetFuncs,
+            const std::unordered_map<std::string, Function> &allFuncsMetadata
+    );
+
+    void patch_function(
+            llvm::LLVMContext &ctx,
+            bool emptyPatch,
+            llvm::Module &M,
+            llvm::Function &F,
+            const std::string &hashFunc,
+            const std::vector<llvm::Function *> &allFuncs,
+            const std::vector<llvm::Function *> &targetFuncs,
+            const std::unordered_map<std::string, Function> &targetFuncMetadata
+    );
 };
 
 #endif // LLVM_PUF_CHECKSUM_H

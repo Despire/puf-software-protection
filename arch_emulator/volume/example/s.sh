@@ -1,6 +1,6 @@
 #/bin/bash
 
-set x
+set +x
 
 llvm_path=../clang+llvm-17.0.6-armv7a-linux-gnueabihf/bin/
 output_path=./target/release/deps
@@ -20,11 +20,15 @@ RUSTLIBS=$(find ${LIB_DIR}/ -name "*.rlib")
 echo "Using $LIB_DIR for rustlib"
 echo "Found RUSTLIBS $RUSTLIBS"
 
-RUSTFLAGS="-C save-temps --emit=llvm-ir" cargo build --release
+if [ $# -eq 0 ]; then
+    echo "Generating LLMV IR..."
+    RUSTFLAGS="-C save-temps --emit=llvm-ir" cargo build --release
+    rm ${output_path}/*no-opt*
+    find ${output_path} -type f | grep -v "rcgu" | xargs rm
+    return 
+fi
 
-rm ${output_path}/*no-opt*
-find ${output_path} -type f | grep -v "rcgu" | xargs rm
-
+echo "Compiling LLVM IR to executable..."
 find ${output_path}/ -name '*.ll' | xargs -n 1 ${llvm_path}/llc -relocation-model=pic -filetype=obj
 
 cc \

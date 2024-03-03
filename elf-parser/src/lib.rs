@@ -34,16 +34,19 @@ impl std::error::Error for ArgError {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Input {
-    // path to the elf file to be parsed/
-    #[serde(rename = "elf")]
-    pub elf: String,
+pub struct HashRequest {
     // multiplier used in the hash function.
     #[serde(rename = "constant")]
-    pub constant: u64,
+    pub constant: u32,
     // function names for which to calculate a hash.
-    #[serde(rename = "functions")]
-    pub functions: Vec<String>,
+    #[serde(rename = "function")]
+    pub function: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Input {
+    #[serde(rename = "requests")]
+    pub requests: Vec<HashRequest>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -51,7 +54,9 @@ pub struct Function {
     #[serde(rename = "function")]
     pub function: String,
     #[serde(rename = "hash")]
-    pub hash: u64,
+    pub hash: u32,
+    #[serde(rename = "constant")]
+    pub constant: u32,
     #[serde(rename = "instruction_count")]
     pub instruction_count: usize,
     #[serde(rename = "instructions")]
@@ -59,13 +64,14 @@ pub struct Function {
 }
 
 pub struct Config {
+    pub elf_path: String,
     pub input_path: String,
     pub output_path: String,
 }
 
 impl Config {
     pub fn new(args: &mut env::Args) -> Result<Config, Box<dyn std::error::Error>> {
-        let mut programs_args = args.skip(1).take(2);
+        let mut programs_args = args.skip(1).take(3);
 
         let input_path = match programs_args.next() {
             Some(path) => path,
@@ -81,7 +87,17 @@ impl Config {
             }
         };
 
+        let elf_path = match programs_args.next() {
+            Some(path) => path,
+            None => {
+                return Err(ArgError::new(
+                    "expected path to elf file to parse as third argument",
+                ))?
+            }
+        };
+
         Ok(Config {
+            elf_path,
             input_path,
             output_path,
         })
@@ -92,17 +108,20 @@ pub fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let input = fs::read_to_string(&cfg.input_path)?;
     let input: Input = serde_json::from_str(&input)?;
 
-    let file = fs::read(input.elf)?;
+    let file = fs::read(&cfg.elf_path)?;
     let elf = Elf::parse(&file)?;
 
-    let functions: Vec<(String, elf::Sym)> = elf
+    let functions: Vec<(String, u32, elf::Sym)> = elf
         .syms
         .iter()
         .map(|sym| {
             if let Some(str_name) = elf.strtab.get_at(sym.st_name) {
                 let str_name = String::from(str_name);
-                if input.functions.contains(&str_name) {
-                    return Some((str_name, sym));
+
+                for request in &input.requests {
+                    if request.function == str_name {
+                        return Some((str_name, request.constant, sym));
+                    }
                 }
             }
             None
@@ -111,24 +130,23 @@ pub fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let mut fncs: Vec<Function> = Vec::new();
-    for (str_name, sym) in functions {
+    for (str_name, constant, sym) in functions {
         let func_addr = sym.st_value;
         let func_size = sym.st_size;
 
         let func_instructions = &file[func_addr as usize..(func_addr + func_size) as usize];
-        let hash = hash(func_instructions, input.constant);
 
         let be_instructions: Vec<u32> = func_instructions
             .chunks(4)
-            .map(|chunk| {
-                // interpret as little endian.
-                chunk.iter().fold(0, |acc, &b| (acc << 8) | b as u32)
-            })
+            .map(|chunk| chunk.iter().fold(0, |acc, &b| (acc << 8) | b as u32))
             .collect();
+
+        let hash = hash5(&be_instructions, constant);
 
         fncs.push(Function {
             function: str_name,
             hash,
+            constant,
             instruction_count: be_instructions.len(),
             instructions: be_instructions,
         });
@@ -139,6 +157,10 @@ pub fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn hash(data: &[u8], multiplier: u64) -> u64 {
-    data.iter().map(|&b| multiplier * b as u64).sum()
+fn hash5(data: &[u32], c: u32) -> u32 {
+    let mut h: u32 = 0;
+    for b in data {
+        h = c.wrapping_mul((*b as u32).wrapping_add(h));
+    }
+    h
 }

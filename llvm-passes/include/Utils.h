@@ -12,16 +12,24 @@
 
 // Custom return value when the device fails to open.
 #define DEV_FAIL 0x9c
+#define CKS_FAIL 0x9E
+
+#define SEED 0x0
 
 inline std::mt19937_64 GetRandomGenerator() {
-    std::random_device rd;
-    std::mt19937_64 rand(rd());
+    std::mt19937_64 rand(SEED);
     return rand;
 }
 
 inline uint64_t RandomInt64() {
     auto rand = GetRandomGenerator();
     std::uniform_int_distribution<uint64_t> dist;
+    return dist(rand);
+}
+
+inline int8_t RandomInt8() {
+    auto rand = GetRandomGenerator();
+    std::uniform_int_distribution<int8_t> dist;
     return dist(rand);
 }
 
@@ -62,6 +70,31 @@ inline llvm::Instruction *RandomNonPHIInstruction(llvm::BasicBlock &BB) {
     std::advance(beg, dist(gen));
 
     return &*beg;
+}
+
+inline void eegcd(int64_t a, int64_t &x, int64_t &y) {
+    int64_t b = uint64_t(std::numeric_limits<uint32_t>::max()) + 1;
+    int64_t x0 = 1, y0 = 0, x1 = 0, y1 = 1;
+
+    while (b != 0) {
+        int64_t q = a / b;
+        int64_t temp = b;
+        b = a % b;
+        a = temp;
+
+        int64_t tempX = x0 - q * x1;
+        int64_t tempY = y0 - q * y1;
+
+        x0 = x1;
+        y0 = y1;
+        x1 = tempX;
+        y1 = tempY;
+    }
+
+    assert(a == 1);
+
+    x = x0;
+    y = y0;
 }
 
 #endif //LLVM_PUF_UTILS_H

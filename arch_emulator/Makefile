@@ -1,14 +1,14 @@
 IMAGE_NAME = bbb-cpu-arch
 DOCKERFILE_PATH = ./Dockerfile
 
-all: build
+all: run
 
 run:
-	docker run -it -d -v ./volume:/project bbb-cpu-arch
-build:
 	docker build -t $(IMAGE_NAME) -f $(DOCKERFILE_PATH) .
-
+	docker run -it -d -v ./volume:/project bbb-cpu-arch
 clean:
+	docker ps --filter "ancestor=$(IMAGE_NAME)" -q | xargs docker stop
+	docker ps -a --filter "ancestor=$(IMAGE_NAME)" -q | xargs docker rm
 	docker rmi $(IMAGE_NAME)
 
-.PHONY: all build clean run
+.PHONY: all run clean
