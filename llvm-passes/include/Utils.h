@@ -15,10 +15,10 @@
 #define CKS_FAIL 0x9E
 
 #define SEED 0x0
+std::mt19937_64 global_rng(SEED);
 
 inline std::mt19937_64 GetRandomGenerator() {
-    std::mt19937_64 rand(SEED);
-    return rand;
+    return global_rng;
 }
 
 inline uint64_t RandomInt64() {
