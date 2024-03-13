@@ -1,9 +1,7 @@
 #ifndef LLVM_LLVM_PUF_OPAQUEPREDICATES_H
 #define LLVM_LLVM_PUF_OPAQUEPREDICATES_H
 
-#include "Utils.h"
 #include "llvm/Passes/PassBuilder.h"
-
 
 namespace OpaquePredicates {
     // OROpaquelyTruePredicatesFuncCount represents the number of supported OR Loop Condition opaque predicate transformations.
@@ -275,7 +273,7 @@ namespace OpaquePredicates {
         return Res;
     }
 
-    OpaquelyTruePredicate getRandomOpaquelyTruePredicate() {
+    OpaquelyTruePredicate getRandomOpaquelyTruePredicate(std::mt19937_64 &rng) {
         // ((a & 1 == 0) || 3(x^2 + x) % 2 == 0)
         OROpaquelyTruePredicates[0] = &conditionOpaquePredicateOR;
         // (a & 1 == 1 || (x^2 + x) % 2 == 0)
@@ -290,10 +288,12 @@ namespace OpaquePredicates {
         // (x + x^3) % 2 == 0 && (2x + 2)(2x) % 4 == 0)
         ANDOpaquelyTruePredicates[2] = &conditionOpaquePredicateANDv3;
 
-        if (RandomInt64() % 2) {
-            return OROpaquelyTruePredicates[RandomInt64(OROpaquelyTruePredicatesFuncCount)];
+        auto idx = rng();
+
+        if (rng() % 2) {
+            return OROpaquelyTruePredicates[idx % OROpaquelyTruePredicatesFuncCount];
         }
-        return ANDOpaquelyTruePredicates[RandomInt64(ANDOpaquelyTruePredicatesFuncCount)];
+        return ANDOpaquelyTruePredicates[idx % ANDOpaquelyTruePredicatesFuncCount];
     }
 }
 

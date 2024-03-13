@@ -1,10 +1,8 @@
 set(LLVM_PUF_PLUGINS
-        PufParser
-        Checksum
+        PufPatcher
 )
 
-set(PufParser_SOURCES PufParser.cpp)
-set(Checksum_SOURCES Checksum.cpp)
+set(PufPatcher_SOURCES PufPatcher.cpp Checksum.cpp)
 
 foreach (plugin ${LLVM_PUF_PLUGINS})
     add_library(${plugin} SHARED ${${plugin}_SOURCES})

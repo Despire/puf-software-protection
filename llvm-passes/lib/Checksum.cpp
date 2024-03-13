@@ -2,7 +2,6 @@
 #include <fstream>
 #include <sstream>
 
-#include "Crossover.h"
 #include "Checksum.h"
 #include "OpaquePredicates.h"
 
@@ -16,7 +15,7 @@
 #include "llvm/Transforms/Utils/Cloning.h"
 
 static llvm::cl::opt<std::string> OutputFile(
-        "out",
+        "outputjson",
         llvm::cl::desc(
                 "When enabled the LLVM pass will patch the .ll files with the necessary instructions, but without functioning properly."
                 " It will generate an output json file that contains all of the patched functions"),
@@ -25,7 +24,7 @@ static llvm::cl::opt<std::string> OutputFile(
 );
 
 static llvm::cl::opt<std::string> InputFile(
-        "in",
+        "inputjson",
         llvm::cl::desc(
                 "When given an input file the LLVM pass will patch the .ll files with the necessary instructions and with the values"
                 "present in that input file."),
@@ -41,16 +40,10 @@ static llvm::cl::opt<bool> SkipCalculatingParity(
         llvm::cl::Optional
 );
 
-llvm::PreservedAnalyses Checksum::run(llvm::Module &M, llvm::ModuleAnalysisManager &) {
+void Checksum::run(llvm::Module &M, std::vector<llvm::Function *> funcs) {
     std::vector<std::string> func_names;
-    std::vector<llvm::Function *> funcs;
-
-    for (auto &f: M) {
-        if (f.isIntrinsic()) continue;
-        if (f.isDeclaration()) continue;
-        if (f.empty()) continue;
-        funcs.push_back(&f);
-        func_names.push_back(f.getName().str());
+    for (auto f: funcs) {
+        func_names.push_back(f->getName().str());
     }
 
     if (!OutputFile.empty()) {
@@ -86,8 +79,6 @@ llvm::PreservedAnalyses Checksum::run(llvm::Module &M, llvm::ModuleAnalysisManag
                 table
         );
     }
-
-    return llvm::PreservedAnalyses::none();
 }
 
 void
@@ -98,23 +89,27 @@ Checksum::patch_function(
         llvm::Function &F,
         const std::vector<llvm::Function *> &allFuncs,
         const std::vector<llvm::Function *> &targetFuncs,
-        const std::unordered_map<std::string, Function> &allFuncMetadata
+        const std::unordered_map<std::string, crossover::Function> &allFuncMetadata
 ) noexcept {
+    uint32_t seed = 0;
+    for (auto c: F.getName().str()) {
+        seed += c;
+    }
+    auto rng = RandomRNG(seed);
+
     llvm::IRBuilder<> builder(&*F.getEntryBlock().getFirstInsertionPt());
 
     add_checksum(ctx, emptyPatch, M, &F, targetFuncs, allFuncMetadata);
 
-    llvm::BasicBlock *SplitBlock = &*RandomElement(F.begin(), F.end());
-    while (SplitBlock->isLandingPad()) {
-        SplitBlock = &*RandomElement(F.begin(), F.end());
-    }
-    llvm::Instruction *SplitInstruction = RandomNonPHIInstruction(*SplitBlock);
-    llvm::Value *RandomFunc = *RandomElement(allFuncs.begin(), allFuncs.end());
+    llvm::BasicBlock *SplitBlock = *exitBlocks(F).begin();
+    llvm::Instruction *SplitInstruction = SplitBlock->getTerminator();
+
+    llvm::Value *RandomFunc = *RandomElementRNG(allFuncs.begin(), allFuncs.end(), rng);
 
     builder.SetInsertPoint(SplitInstruction);
     llvm::Value *RandomInteger = builder.CreatePtrToInt(RandomFunc, LLVM_I64(ctx));
 
-    auto *predicate = OpaquePredicates::getRandomOpaquelyTruePredicate();
+    auto *predicate = OpaquePredicates::getRandomOpaquelyTruePredicate(rng);
     llvm::Value *condition = (&*predicate)(RandomInteger, SplitInstruction);
     auto newBB = llvm::SplitBlockAndInsertIfThen(condition, SplitInstruction, false);
 
@@ -147,15 +142,16 @@ Checksum::write_func_requests(
         const std::vector<std::string> &funcs
 ) noexcept {
     // Create an odd number
-    std::vector<HashRequest> requests;
+    std::vector<crossover::HashRequest> requests;
 
+    auto rng = RandomRNG();
     for (auto &f: funcs) {
-        uint64_t odd = RandomInt64(0, (std::numeric_limits<uint8_t>::max() / 2) % 21);
+        uint64_t odd = rng() % 21;
         odd = odd * 2 + 1;
         requests.push_back({odd, f});
     }
 
-    Input input = {requests};
+    crossover::Input input = {requests};
     nlohmann::json json = input;
 
     std::ofstream outputFile(outFile);
@@ -168,9 +164,9 @@ Checksum::write_func_requests(
     }
 }
 
-std::unordered_map<std::string, Function>
+std::unordered_map<std::string, crossover::Function>
 Checksum::read_func_metadata(const std::string &infile) {
-    std::unordered_map<std::string, Function> table;
+    std::unordered_map<std::string, crossover::Function> table;
 
     if (infile.empty()) {
         return table;
@@ -185,7 +181,7 @@ Checksum::read_func_metadata(const std::string &infile) {
     nlohmann::json j;
     inputFile >> j;
 
-    std::vector<Function> functions = j.get<std::vector<Function>>();
+    std::vector<crossover::Function> functions = j.get<std::vector<crossover::Function>>();
 
     for (auto &f: functions) {
         table[f.function] = f;
@@ -201,13 +197,12 @@ Checksum::add_checksum(
         llvm::Module &M,
         llvm::Function *function,
         const std::vector<llvm::Function *> &targetFuncs,
-        const std::unordered_map<std::string, Function> &allFuncsMetadata
+        const std::unordered_map<std::string, crossover::Function> &allFuncsMetadata
 ) noexcept {
     llvm::BasicBlock *entry = &function->getEntryBlock();
 
     for (auto &targetFunc: targetFuncs) {
         llvm::IRBuilder<> builder(&*entry->getFirstInsertionPt());
-        llvm::outs() << "FUNC: " << targetFunc->getName().str() << '\n';
 
         llvm::Value *call = nullptr;
         {
@@ -245,12 +240,10 @@ Checksum::add_checksum(
         auto exitf = M.getOrInsertFunction("exit", ftype);
         builder.SetInsertPoint(newBB);
         builder.CreateCall(exitf, {LLVM_CONST_I32(ctx, CKS_FAIL)});
-
-        llvm::outs() << "FUNC: " << targetFunc->getName().str() << " DONE" << '\n';
     }
 }
 
-std::string Checksum::calculate_parity(const Function &FuncMetadata) noexcept {
+std::string Checksum::calculate_parity(const crossover::Function &FuncMetadata) noexcept {
     size_t parity_count = 0;
     for (uint32_t i: FuncMetadata.instructions) {
         if (i == PARITY_INSTRUCTION_INT) {
@@ -263,7 +256,7 @@ std::string Checksum::calculate_parity(const Function &FuncMetadata) noexcept {
 
     uint64_t z = 0;
     uint64_t c = FuncMetadata.constant;
-    int64_t parity_c = 0;
+    uint64_t parity_c = 0;
     auto idx = copy.rend();
 
     for (auto beg = copy.rbegin(); beg != copy.rend(); ++beg) {
@@ -280,14 +273,14 @@ std::string Checksum::calculate_parity(const Function &FuncMetadata) noexcept {
         c = c * FuncMetadata.constant;
     }
 
-    int64_t x, y;
+    uint64_t x, y;
     eegcd(parity_c, x, y);
     x = x * ((int64_t(std::numeric_limits<uint32_t>::max()) + 1) - z);
     x = x % (int64_t(std::numeric_limits<uint32_t>::max()) + 1);
 
-    *idx = x * parity_count;
+    *idx = x * parity_c;
 
-    auto result = uint32_t(x * parity_count);
+    auto result = uint32_t(x);
 
     // check if the instructions sum to 0
     uint32_t sum = 0;
@@ -318,7 +311,6 @@ std::string Checksum::calculate_parity(const Function &FuncMetadata) noexcept {
         out += "0x" + stream.str();
     }
 
-
     return out;
 }
 
@@ -344,30 +336,4 @@ bne 1b
             "=r,=r,=r,r,0,1,2,~{r3},~{cc},~{memory}",
             true
     );
-}
-
-//------------------------------------------------------
-//               Registration of the Plugin
-//------------------------------------------------------
-llvm::PassPluginLibraryInfo getChecksumPluginInfo() {
-    return {
-            LLVM_PLUGIN_API_VERSION,
-            "checksum",
-            LLVM_VERSION_STRING,
-            [](llvm::PassBuilder &PB) {
-                using namespace llvm;
-                PB.registerPipelineParsingCallback(
-                        [&](StringRef Name, ModulePassManager &MPM, ArrayRef<PassBuilder::PipelineElement>) {
-                            if (Name == "checksum") {
-                                MPM.addPass(Checksum());
-                                return true;
-                            }
-                            return false;
-                        });
-            }
-    };
-}
-
-extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
-    return getChecksumPluginInfo();
 }

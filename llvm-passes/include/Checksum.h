@@ -12,14 +12,17 @@
 #define PARITY_INSTRUCTION ".byte 00, 01, 02, 03"
 #define PARITY_INSTRUCTION_INT 66051
 
-struct Checksum : public llvm::PassInfoMixin<Checksum> {
-    llvm::PreservedAnalyses run(llvm::Module &M, llvm::ModuleAnalysisManager &);
+struct Checksum {
+public:
+    void run(llvm::Module &M, std::vector<llvm::Function*> funcs);
+
+private:
 
     void write_func_requests(const std::string &outfile, const std::vector<std::string> &funcs) noexcept;
 
-    std::unordered_map<std::string, Function> read_func_metadata(const std::string &infile);
+    std::unordered_map<std::string, crossover::Function> read_func_metadata(const std::string &infile);
 
-    std::string calculate_parity(const Function &FuncMetadata) noexcept;
+    std::string calculate_parity(const crossover::Function &FuncMetadata) noexcept;
 
     llvm::InlineAsm *checksum(llvm::LLVMContext &ctx) noexcept;
 
@@ -29,7 +32,7 @@ struct Checksum : public llvm::PassInfoMixin<Checksum> {
             llvm::Module &M,
             llvm::Function *function,
             const std::vector<llvm::Function *> &targetFuncs,
-            const std::unordered_map<std::string, Function> &allFuncsMetadata
+            const std::unordered_map<std::string, crossover::Function> &allFuncsMetadata
     ) noexcept;
 
     void patch_function(
@@ -39,7 +42,7 @@ struct Checksum : public llvm::PassInfoMixin<Checksum> {
             llvm::Function &F,
             const std::vector<llvm::Function *> &allFuncs,
             const std::vector<llvm::Function *> &targetFuncs,
-            const std::unordered_map<std::string, Function> &allFuncMetadata
+            const std::unordered_map<std::string, crossover::Function> &allFuncMetadata
     ) noexcept;
 };
 
