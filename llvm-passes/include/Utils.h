@@ -31,6 +31,9 @@ inline Iter RandomElementRNG(Iter start, Iter end, RNG &&rng) {
     return start;
 }
 
+template<typename RNG>
+inline int32_t random_i32(int32_t max, RNG &&rng) { return rng() % max; }
+
 inline std::vector<llvm::BasicBlock *> exitBlocks(llvm::Function &F) {
     std::vector<llvm::BasicBlock *> result;
 
@@ -94,8 +97,8 @@ inline void fill_8bits(uint32_t *index, uint8_t *array, uint8_t value) {
     *index += 1;
 }
 
-inline std::vector<llvm::Function *> external_nodes(llvm::CallGraph &g) {
-    std::vector<llvm::Function *> external;
+inline std::set<llvm::Function *> external_nodes(llvm::CallGraph &g) {
+    std::set<llvm::Function *> external;
     for (auto &p: g) {
         auto &node = p.second;
         if (node->getFunction() == nullptr) {
@@ -122,7 +125,7 @@ inline std::vector<llvm::Function *> external_nodes(llvm::CallGraph &g) {
         }
 
         if (callees.empty()) {
-            external.push_back(node->getFunction());
+            external.insert(node->getFunction());
         }
     }
 

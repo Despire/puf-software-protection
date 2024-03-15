@@ -1,10 +1,10 @@
-use serde::{Serialize, Deserialize};
-use crate::{Config, reed_solomon};
+use crate::{reed_solomon, Config};
+use serde::{Deserialize, Serialize};
 
 use rand::distributions::{Distribution, Uniform};
 use rand::seq::SliceRandom;
-use rand_chacha::ChaCha8Rng;
 use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 
 pub type DRAMCells = Vec<Vec<u32>>;
 
@@ -20,7 +20,10 @@ pub struct Enrollment {
     parity: Vec<u16>,
 }
 
-pub fn prepare(cfg: &Config, dram_cells: Vec<(DRAMCells, DRAMCells, DRAMCells)>) -> Result<Vec<Enrollment>, Box<dyn std::error::Error>> {
+pub fn prepare(
+    cfg: &Config,
+    dram_cells: Vec<(DRAMCells, DRAMCells, DRAMCells)>,
+) -> Result<Vec<Enrollment>, Box<dyn std::error::Error>> {
     let custom_seed = [0u8; 32];
     let mut rng = ChaCha8Rng::from_seed(custom_seed);
     let u32_range = Uniform::new_inclusive(0, u32::MAX);
@@ -33,10 +36,18 @@ pub fn prepare(cfg: &Config, dram_cells: Vec<(DRAMCells, DRAMCells, DRAMCells)>)
             let stable_1_cells = &cells.0;
             let stable_0_cells = &cells.2;
 
-            let mut dram_1_pointers = stable_1_cells.iter().flatten().map(|v| *v).collect::<Vec<u32>>();
+            let mut dram_1_pointers = stable_1_cells
+                .iter()
+                .flatten()
+                .map(|v| *v)
+                .collect::<Vec<u32>>();
             dram_1_pointers.shuffle(&mut rng);
 
-            let mut dram_0_pointers = stable_0_cells.iter().flatten().map(|v| *v).collect::<Vec<u32>>();
+            let mut dram_0_pointers = stable_0_cells
+                .iter()
+                .flatten()
+                .map(|v| *v)
+                .collect::<Vec<u32>>();
             dram_0_pointers.shuffle(&mut rng);
 
             let mut pointers = Vec::new();
@@ -52,7 +63,6 @@ pub fn prepare(cfg: &Config, dram_cells: Vec<(DRAMCells, DRAMCells, DRAMCells)>)
                 }
             }
 
-            println!("encoding: {:b}", auth_value);
             let mut data = [0u8; AUTH_VALUE_SIZE];
             for i in 0..AUTH_VALUE_SIZE {
                 let bit = (auth_value >> ((AUTH_VALUE_SIZE - 1) - i)) & 0x1;
@@ -60,10 +70,12 @@ pub fn prepare(cfg: &Config, dram_cells: Vec<(DRAMCells, DRAMCells, DRAMCells)>)
                     data[i] = 1;
                 }
             }
-            data.iter().for_each(|bit| {
-                print!("{}", bit);
-            });
-            let mut parity = vec![0u16; (AUTH_VALUE_SIZE as f64 * (cfg.enrollment.parity_percentage as f64 / 100.)) as usize];
+
+            let mut parity = vec![
+                0u16;
+                (AUTH_VALUE_SIZE as f64 * (cfg.enrollment.parity_percentage as f64 / 100.))
+                    as usize
+            ];
 
             let control_ptr = reed_solomon::init(&parity);
             if control_ptr.is_null() {

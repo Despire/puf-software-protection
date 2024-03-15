@@ -1,5 +1,3 @@
-#include <vector>
-#include <fstream>
 #include <sstream>
 
 #include "Checksum.h"
@@ -14,24 +12,6 @@
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
-static llvm::cl::opt<std::string> OutputFile(
-        "outputjson",
-        llvm::cl::desc(
-                "When enabled the LLVM pass will patch the .ll files with the necessary instructions, but without functioning properly."
-                " It will generate an output json file that contains all of the patched functions"),
-        llvm::cl::value_desc("string"),
-        llvm::cl::Optional
-);
-
-static llvm::cl::opt<std::string> InputFile(
-        "inputjson",
-        llvm::cl::desc(
-                "When given an input file the LLVM pass will patch the .ll files with the necessary instructions and with the values"
-                "present in that input file."),
-        llvm::cl::value_desc("string"),
-        llvm::cl::Optional
-);
-
 static llvm::cl::opt<bool> SkipCalculatingParity(
         "pskip",
         llvm::cl::desc(
@@ -41,17 +21,8 @@ static llvm::cl::opt<bool> SkipCalculatingParity(
 );
 
 void Checksum::run(llvm::Module &M, std::vector<llvm::Function *> funcs) {
-    std::vector<std::string> func_names;
-    for (auto f: funcs) {
-        func_names.push_back(f->getName().str());
-    }
-
-    if (!OutputFile.empty()) {
-        write_func_requests(OutputFile, func_names);
-    }
-
     // Table contains the functions which can be actually checksummed
-    auto table = read_func_metadata(InputFile);
+    std::unordered_map<std::string, crossover::Function> table;
 
     // If the inputfile is empty this will be a empty patch i.e the patch
     // will not contain actual values, just the instructions.
@@ -91,10 +62,7 @@ Checksum::patch_function(
         const std::vector<llvm::Function *> &targetFuncs,
         const std::unordered_map<std::string, crossover::Function> &allFuncMetadata
 ) noexcept {
-    uint32_t seed = 0;
-    for (auto c: F.getName().str()) {
-        seed += c;
-    }
+    uint32_t seed = std::accumulate(F.getName().begin(), F.getName().end(), 0);
     auto rng = RandomRNG(seed);
 
     llvm::IRBuilder<> builder(&*F.getEntryBlock().getFirstInsertionPt());
@@ -134,60 +102,6 @@ Checksum::patch_function(
 
     builder.SetInsertPoint(newBB);
     builder.CreateCall(parity, {});
-}
-
-void
-Checksum::write_func_requests(
-        const std::string &outFile,
-        const std::vector<std::string> &funcs
-) noexcept {
-    // Create an odd number
-    std::vector<crossover::HashRequest> requests;
-
-    auto rng = RandomRNG();
-    for (auto &f: funcs) {
-        uint64_t odd = rng() % 21;
-        odd = odd * 2 + 1;
-        requests.push_back({odd, f});
-    }
-
-    crossover::Input input = {requests};
-    nlohmann::json json = input;
-
-    std::ofstream outputFile(outFile);
-    if (outputFile.is_open()) {
-        outputFile << json.dump(4);
-        outputFile.close();
-        llvm::outs() << "JSON written to file successfully." << '\n';
-    } else {
-        llvm::errs() << "Unable to open file for writing." << '\n';
-    }
-}
-
-std::unordered_map<std::string, crossover::Function>
-Checksum::read_func_metadata(const std::string &infile) {
-    std::unordered_map<std::string, crossover::Function> table;
-
-    if (infile.empty()) {
-        return table;
-    }
-
-    std::ifstream inputFile(infile);
-    if (!inputFile.is_open()) {
-        llvm::errs() << "Could not open the file." << "\n";
-        throw std::runtime_error("failed to open file");
-    }
-
-    nlohmann::json j;
-    inputFile >> j;
-
-    std::vector<crossover::Function> functions = j.get<std::vector<crossover::Function>>();
-
-    for (auto &f: functions) {
-        table[f.function] = f;
-    }
-
-    return table;
 }
 
 void

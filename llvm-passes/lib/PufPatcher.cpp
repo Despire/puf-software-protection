@@ -1,13 +1,10 @@
 #include "PufPatcher.h"
 
-#include <fstream>
-#include <sys/fcntl.h>
-
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/IR/InlineAsm.h"
 
 static llvm::cl::opt<std::string> EnrollmentFile(
         "enrollment",
@@ -16,169 +13,92 @@ static llvm::cl::opt<std::string> EnrollmentFile(
         llvm::cl::Required
 );
 
+static llvm::cl::opt<std::string> OutputFile(
+        "outputjson",
+        llvm::cl::desc(
+                "When enabled the LLVM pass will patch the .ll files with the necessary instructions, but without functioning properly."
+                " It will generate an output json file that contains all of the patched functions"),
+        llvm::cl::value_desc("string"),
+        llvm::cl::Optional
+);
+
+static llvm::cl::opt<std::string> InputFile(
+        "inputjson",
+        llvm::cl::desc(
+                "When given an input file the LLVM pass will patch the .ll files with the necessary instructions and with the values"
+                "present in that input file."),
+        llvm::cl::value_desc("string"),
+        llvm::cl::Optional
+);
+
 llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisManager &AM) {
     init_deps(M);
+    auto enrollments = crossover::read_enrollment_data(EnrollmentFile);
 
-    enrollment::EnrollData enrollments = read_enrollment_data();
-
-    // open the /dev/puf in a ctor
-    // It will open the device, write the enrollment data to it.
-    auto ctor = puf_open_ctor(enrollments, M, puf_fd);
-
-    // close /dev/puf in a dtor
-    puf_close_dtor(M, puf_fd);
-
+    std::vector<std::string> func_names;
     std::vector<llvm::Function *> functions_to_patch;
     for (auto &f: M) {
         if (f.isIntrinsic() || f.isDeclaration() || f.empty()) {
             continue;
         }
         functions_to_patch.push_back(&f);
+        func_names.push_back(f.getName().str());
     }
 
     // Analyse call graph before replacing with indirect calls and before adding
     // PUF thread.
     auto call_graph = llvm::CallGraphAnalysis().run(M, AM);
 
+    // Creates a global array where the PUF measurements will be stored.
+    auto puf_array = create_puf_array(M, enrollments);
+
     // Replaces all calls/invokes in the collected functions and creates a lookup table
     // where each function has it place which will be then computed when receiving the correct PUF response.
     // After this function only the call_graph should be used for identifying the calls.
-    auto [lookup_table, call_mappings] = replace_calls_with_lookup_table(M, functions_to_patch);
+    auto lookup_table = replace_calls_with_lookup_table(M, functions_to_patch);
+
+    // Store which functions are we considering in this LLVM pass
+    // and alongisde it also the calls that are made within those functions.
+    // The output JSON will be used by other program to generate the offsets
+    // and other data within the ELF binary.
+    if (!OutputFile.empty()) {
+        crossover::write_func_requests(
+                OutputFile,
+                func_names,
+                lookup_table
+        );
+    }
+
+    auto table = crossover::read_func_metadata(InputFile);
+    if (table.empty()) {
+        llvm::outs() << "InputFile empty: patching skeleton only" << '\n';
+    }
 
     // Identifies all possibly external entry points and determines at which places
     // the functions addresses in the lookup table should be computed.
-    insert_address_calculations(enrollments, lookup_table, call_mappings, call_graph);
+    insert_address_calculations(
+            table,
+            enrollments,
+            puf_array,
+            lookup_table,
+            call_graph
+    );
+
+    // open the /dev/puf in a ctor
+    // It will open the device, write the enrollment data to it.
+    auto ctor = puf_open_ctor(M, enrollments, global_variables.puf_fd);
+
+    // close /dev/puf in a dtor
+    puf_close_dtor(M, global_variables.puf_fd);
 
     // add code that spawns a detached thread that will perform the PUF readings.
     // Function call added will not be in the lookup table created above, this is by design.
-    spawn_puf_thread(ctor, M, enrollments);
+    spawn_puf_thread(M, puf_array, ctor, enrollments);
 
     // add checksums of the patched functions.
 //    checksum.run(M, funcs);
 
     return llvm::PreservedAnalyses::none();
-}
-
-llvm::Function *PufPatcher::puf_open_ctor(
-        enrollment::EnrollData &enrollments,
-        llvm::Module &M,
-        llvm::GlobalVariable *Fd
-) {
-    auto &ctx = M.getContext();
-
-    auto *puf_func = llvm::Function::Create(
-            llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false),
-            llvm::Function::InternalLinkage,
-            "____open_device____",
-            &M
-    );
-
-    llvm::IRBuilder<> Builder(llvm::BasicBlock::Create(ctx, "entry", puf_func));
-    auto *fd = Builder.CreateCall(open_func, {
-            Builder.CreateGlobalStringPtr("/dev/puf"), Builder.getInt32(O_RDWR)
-    });
-
-    // error handle the file descriptor.
-    auto *is_not_open_fd = Builder.CreateICmpSLT(fd, Builder.getInt32(0));
-    auto *failed_bb = llvm::BasicBlock::Create(ctx, "error", puf_func);
-    auto *success_bb = llvm::BasicBlock::Create(ctx, "continue", puf_func);
-
-    Builder.CreateCondBr(is_not_open_fd, failed_bb, success_bb);
-
-    // Handle the error case first, by exiting the program.
-    {
-        Builder.SetInsertPoint(failed_bb);
-        // TODO: remove this to correcly exit.
-        // Only for testing.
-//        Builder.CreateBr(success_bb);
-
-        Builder.CreateCall(exit_func, {Builder.getInt32(DEV_FAIL)});
-        Builder.CreateUnreachable();
-    }
-
-    // handle ok path.
-    Builder.SetInsertPoint(success_bb);
-    Builder.CreateStore(fd, Fd);
-
-    // Parity Bits + Cell Pointers
-    size_t array_length_bytes = 0;
-    for (auto &enrollment: enrollments.enrollments) {
-        // | parity length| parity bits| pointers bits|
-        array_length_bytes += 1;
-        array_length_bytes += enrollment.parity.size() * sizeof(uint16_t);
-        array_length_bytes += enrollment.pointers.size() * sizeof(uint32_t);
-        assert(enrollment.pointers.size() == 32); // should encode 32bits.
-    }
-
-    std::vector<uint8_t> enrollment_data;
-    enrollment_data.resize(array_length_bytes);
-    uint32_t write_idx = 0;
-
-    for (auto &enrollment: enrollments.enrollments) {
-        fill_8bits(&write_idx, &enrollment_data[0], uint8_t(enrollment.parity.size()));
-        for (auto parity: enrollment.parity) {
-            fill_16bits(&write_idx, &enrollment_data[0], parity);
-        }
-        for (auto ptr: enrollment.pointers) {
-            fill_32bits(&write_idx, &enrollment_data[0], ptr);
-        }
-    }
-
-    // Create Array with enrollment data.
-    std::vector<llvm::Constant *> llvm_arr_values;
-    llvm_arr_values.reserve(enrollment_data.size());
-
-    for (uint8_t val: enrollment_data) {
-        llvm_arr_values.push_back(llvm::ConstantInt::get(LLVM_I8(ctx), val));
-    }
-
-    auto *arr_type = llvm::ArrayType::get(LLVM_I8(ctx), array_length_bytes);
-    llvm::Constant *llvm_enrollment_data = llvm::ConstantArray::get(arr_type, llvm_arr_values);
-
-    // Write to PUF
-    auto llvm_arr = Builder.CreateAlloca(arr_type, nullptr, "enrollment_data");
-    Builder.CreateStore(llvm_enrollment_data, llvm_arr);
-    auto *llvm_arr_ptr = Builder.CreateBitCast(llvm_arr, llvm::PointerType::get(arr_type, 0));
-    Builder.CreateCall(write_func, {fd, llvm_arr_ptr, LLVM_CONST_I32(ctx, array_length_bytes)});
-
-    Builder.CreateRetVoid();
-
-    appendToGlobalCtors(M, puf_func, std::numeric_limits<int>::min());
-
-    return puf_func;
-}
-
-llvm::Function *PufPatcher::puf_close_dtor(llvm::Module &M, llvm::GlobalVariable *Fd) {
-    auto &ctx = M.getContext();
-    auto *puf_func = llvm::Function::Create(
-            llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false),
-            llvm::Function::InternalLinkage,
-            "____close_device____",
-            &M
-    );
-
-    auto *BB = llvm::BasicBlock::Create(ctx, "entry", puf_func);
-    llvm::IRBuilder<> Builder(BB);
-    auto *fd = Builder.CreateLoad(Fd->getValueType(), Fd);
-    Builder.CreateCall(close_func, {fd});
-    Builder.CreateRetVoid();
-
-    appendToGlobalDtors(M, puf_func, 0);
-    return puf_func;
-}
-
-enrollment::EnrollData PufPatcher::read_enrollment_data() {
-    llvm::outs() << "input enrollment file: " << EnrollmentFile << "\n";
-    std::ifstream inputFile(EnrollmentFile);
-    if (!inputFile.is_open()) {
-        llvm::errs() << "Could not open the file." << "\n";
-        throw std::runtime_error("failed to open file");
-    }
-
-    nlohmann::json j;
-    inputFile >> j;
-
-    return j.get<enrollment::EnrollData>();
 }
 
 std::pair<
@@ -191,7 +111,7 @@ PufPatcher::replace_calls_with_lookup_table(
 ) {
     std::map<std::string, std::vector<llvm::CallBase *>> mappings;
 
-    // for each function collect all call instructions.
+    // for each function collect all call instructions that we know we can replace.
     for (auto f: funcs) {
         assert(!f->getName().str().empty());
         assert(mappings.find(f->getName().str()) == mappings.end());
@@ -205,42 +125,47 @@ PufPatcher::replace_calls_with_lookup_table(
                         if (calle->isIntrinsic()) {
                             continue;
                         }
-                        mappings[f->getName().str()].push_back(is_call);
+                        bool exists = std::any_of(
+                                funcs.begin(), funcs.end(),
+                                [&](const auto &check) { return check == calle; }
+                        );
+                        if (exists) { // only consider this call if the address is known at compile time.
+                            mappings[f->getName().str()].push_back(is_call);
+                        }
                     }
                 }
             }
         }
     }
 
-    // TODO: replace this with nullptrs.
-
     // group calls to replace and their occurrences.
-    std::map<llvm::Function *, std::vector<llvm::CallBase *>> group_calls;
+
+    // to guarantee the same traversal each time the keys in the maps need to be
+    // deterministic on each run.
+    struct MapKey {
+        llvm::Function *function = nullptr;
+        std::string key;
+    };
+
+    struct MapKeyComparison {
+        bool operator()(const MapKey &lhs, const MapKey &rhs) const {
+            return lhs.key < rhs.key;
+        }
+    };
+    std::map<MapKey, std::vector<llvm::CallBase *>, MapKeyComparison> group_calls;
     for (auto &[_, calls]: mappings) {
         for (auto &call: calls) {
-            group_calls[call->getCalledFunction()].push_back(call);
+            group_calls[MapKey{call->getCalledFunction(), call->getCalledFunction()->getName().str()}].push_back(call);
         }
     }
 
     // create a global lookup table of functions addresses.
     size_t lookup_table_size = group_calls.size();
 
-    std::vector<llvm::Constant *> lookup_table_data;
-    lookup_table_data.reserve(lookup_table_size);
-
     auto &ctx = M.getContext();
-    for (auto &[func, _]: group_calls) {
-        // create pointer to function.
-        lookup_table_data.push_back(
-                llvm::ConstantExpr::getPtrToInt(M.getFunction(func->getName().str()), LLVM_I32(ctx))
-        );
-    }
+    std::vector<llvm::Constant *> lookup_table_data(lookup_table_size, LLVM_CONST_I32(ctx, 0));
 
-    auto lookup_table_typ = llvm::ArrayType::get(
-            LLVM_I32(ctx),
-            lookup_table_size
-    );
-
+    auto lookup_table_typ = llvm::ArrayType::get(LLVM_I32(ctx), lookup_table_size);
     auto lookup_table = new llvm::GlobalVariable(
             M,
             lookup_table_typ,
@@ -253,8 +178,8 @@ PufPatcher::replace_calls_with_lookup_table(
     // replace all occurrences with an indirect call via the table.
     uint32_t idx = 0;
     std::map<llvm::Function *, uint32_t> func_to_lookup_idx;
-    for (auto &[func, calls]: group_calls) {
-        func_to_lookup_idx[func] = idx;
+    for (auto &[key, calls]: group_calls) {
+        func_to_lookup_idx[key.function] = idx;
         for (auto &call: calls) {
             llvm::IRBuilder<> Builder(call);
 
@@ -303,191 +228,31 @@ PufPatcher::replace_calls_with_lookup_table(
     return std::make_pair(lookup_table, std::move(func_to_lookup_idx));
 }
 
-void PufPatcher::spawn_puf_thread(
-        llvm::Function *function_to_add_code,
-        llvm::Module &M,
-        enrollment::EnrollData &enrollments
-) {
-    auto &ctx = M.getContext();
-
-    auto thread_function = llvm::Function::Create(
-            llvm::FunctionType::get(
-                    llvm::PointerType::getInt8PtrTy(ctx),
-                    {llvm::PointerType::getInt8PtrTy(ctx)},
-                    false
-            ),
-            llvm::Function::InternalLinkage,
-            "____puf_reader____",
-            M
-    );
-    thread_function->addFnAttr(llvm::Attribute::NoInline);
-
-    llvm::IRBuilder<> Builder(llvm::BasicBlock::Create(thread_function->getContext(), "entry", thread_function));
-
-    // TODO: Fixup
-    auto *printf_format_str = Builder.CreateGlobalStringPtr("PUF response: 0x%08x\n");
-    auto *format_str_ptr = Builder.CreatePointerCast(printf_format_str, printf_arg_type, "formatStr");
-    auto *puf_response = Builder.CreateAlloca(LLVM_U32(ctx));
-    Builder.CreateStore(LLVM_CONST_I32(ctx, 0), puf_response);
-    auto *local_puf_fd = Builder.CreateLoad(LLVM_I32(ctx), puf_fd);
-    for (uint32_t timeout: enrollments.requests) {
-        Builder.CreateCall(sleep_func, {LLVM_CONST_I32(ctx, timeout)});
-        Builder.CreateCall(read_func,
-                           {
-                                   local_puf_fd,
-                                   puf_response,
-                                   LLVM_CONST_I32(ctx, sizeof(uint32_t))
-                           });
-        Builder.CreateCall(printf_func, {format_str_ptr, Builder.CreateLoad(LLVM_U32(ctx), puf_response)});
-        Builder.CreateCall(fflush_func, {Builder.CreateLoad(stdoutput->getValueType(), stdoutput)});
-    }
-
-    Builder.CreateRet(llvm::ConstantPointerNull::get(llvm::Type::getInt8PtrTy(ctx)));
-
-    // Add code to spawn detached thread for the above created function.
-    {
-        Builder.SetInsertPoint(&*function_to_add_code->getEntryBlock().getFirstInsertionPt());
-
-        // Create a struct type with two members: an i32 and an array of 32 i8 values
-        auto *union_pthread_attr_t = llvm::StructType::create(
-                ctx,
-                {LLVM_I32(ctx), llvm::ArrayType::get(LLVM_I8(ctx), 32)},
-                "union.pthread_attr_t"
-        );
-
-        auto *thread_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
-        auto *union_ptr = Builder.CreateAlloca(union_pthread_attr_t);
-
-        Builder.CreateCall(pthread_attr_init_func, {union_ptr});
-        Builder.CreateCall(pthread_attr_setdetachstate_func, {union_ptr, LLVM_CONST_I32(ctx, 1)});
-        Builder.CreateCall(pthread_create_func, {
-                thread_ptr,
-                union_ptr,
-                thread_function,
-                llvm::ConstantPointerNull::get(llvm::Type::getInt8PtrTy(ctx))
-        });
-    }
-}
-
-void PufPatcher::init_deps(llvm::Module &M) {
-    auto &ctx = M.getContext();
-
-    pthread_attr_init_func = M.getOrInsertFunction("pthread_attr_init", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {llvm::PointerType::getInt8PtrTy(ctx)},
-            false
-    ));
-
-    pthread_attr_setdetachstate_func = M.getOrInsertFunction("pthread_attr_setdetachstate", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {llvm::PointerType::getInt8PtrTy(ctx), LLVM_I32(ctx)},
-            false
-    ));
-
-    pthread_create_func = M.getOrInsertFunction("pthread_create", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {
-                    llvm::PointerType::getInt8PtrTy(ctx),
-                    llvm::PointerType::getInt8PtrTy(ctx),
-                    llvm::PointerType::getInt8PtrTy(ctx),
-                    llvm::PointerType::getInt8PtrTy(ctx)
-            },
-            false
-    ));
-
-    stdoutput = M.getGlobalVariable("stdout");
-    if (!stdoutput) {
-        stdoutput = new llvm::GlobalVariable(M,
-                                             llvm::PointerType::getInt8PtrTy(ctx),
-                                             false,
-                                             llvm::GlobalValue::ExternalLinkage,
-                                             nullptr,
-                                             "stdout",
-                                             nullptr,
-                                             llvm::GlobalValue::NotThreadLocal,
-                                             std::nullopt,
-                                             true
-        );
-    }
-
-    // bring printf, fflush and sleep into scope.
-    printf_arg_type = llvm::PointerType::getUnqual(LLVM_I8(ctx));
-
-    printf_func = M.getOrInsertFunction("printf", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            printf_arg_type,
-            true
-    ));
-
-    sleep_func = M.getOrInsertFunction("sleep", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {LLVM_I32(ctx)},
-            false
-    ));
-
-    fflush_func = M.getOrInsertFunction("fflush", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {llvm::PointerType::getInt8PtrTy(ctx)},
-            false
-    ));
-
-    close_func = M.getOrInsertFunction("close", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {LLVM_I32(ctx)},
-            false
-    ));
-
-    write_func = M.getOrInsertFunction("write", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {LLVM_I32(ctx), llvm::Type::getInt8PtrTy(ctx), LLVM_I32(ctx)},
-            false
-    ));
-
-    read_func = M.getOrInsertFunction("read", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {LLVM_I32(ctx), llvm::Type::getInt8PtrTy(ctx), LLVM_I32(ctx)},
-            false
-    ));
-
-    exit_func = M.getOrInsertFunction("exit", llvm::FunctionType::get(
-            llvm::Type::getVoidTy(ctx),
-            {LLVM_I32(ctx)},
-            false)
-    );
-
-    // Create global variable for the file descriptor
-    puf_fd = M.getGlobalVariable("____puf_fd____");
-    if (!puf_fd) {
-        puf_fd = new llvm::GlobalVariable(
-                M,
-                LLVM_I32(ctx),
-                false,
-                llvm::GlobalValue::InternalLinkage,
-                LLVM_CONST_I32(ctx, 0), "____puf_fd____"
-        );
-    }
-
-    open_func = M.getOrInsertFunction("open", llvm::FunctionType::get(
-            LLVM_I32(ctx),
-            {
-                    llvm::Type::getInt8PtrTy(ctx),
-                    LLVM_I32(ctx)
-            },
-            false
-    ));
-}
-
 void PufPatcher::insert_address_calculations(
-        enrollment::EnrollData &enrollments,
-        llvm::GlobalVariable *lookup_table,
-        std::map<llvm::Function *, uint32_t> &lookup_table_call_mappings,
+        std::unordered_map<std::string, crossover::Function> &compiled_functions_metadata,
+        crossover::EnrollData &enrollments,
+        std::pair<llvm::GlobalVariable *, size_t> &puf_array,
+        std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
         llvm::CallGraph &call_graph
 ) {
-    call_graph.print(llvm::outs());
+    auto &[look_up_table_global, lookup_table_call_mappings] = lookup_table;
     auto external_entry_points = external_nodes(call_graph);
 
-    using MapTableFunctionToPaths = std::map<llvm::Function *, std::vector<llvm::Function *>>;
-    using MapExternalPointsToTableFunctions = std::map<llvm::Function *, MapTableFunctionToPaths>;
+    // to guarantee the same traversal each time the keys in the maps need to be
+    // deterministic on each run.
+    struct MapKey {
+        llvm::Function *function = nullptr;
+        std::string key;
+    };
+
+    struct MapKeyComparison {
+        bool operator()(const MapKey &lhs, const MapKey &rhs) const {
+            return lhs.key < rhs.key;
+        }
+    };
+
+    using MapTableFunctionToPaths = std::map<MapKey, std::vector<llvm::Function *>, MapKeyComparison>;
+    using MapExternalPointsToTableFunctions = std::map<MapKey, MapTableFunctionToPaths, MapKeyComparison>;
 
     // all places where the control flow will check and block until the
     // necessary PUF response for the computation of the destination address is received.
@@ -499,22 +264,241 @@ void PufPatcher::insert_address_calculations(
                 continue;
             }
 
-            // for the ecternal entry we have the shortest path to the func.
-            mappings[external_entry][func] = std::move(path);
+            MapKey external_entry_key = MapKey{external_entry, external_entry->getName().str()};
+            MapKey func_key = MapKey{func, func->getName().str()};
+            mappings[external_entry_key][func_key] = std::move(path);
         }
     }
 
-    for (auto &[external_func, paths_to_target_func] : mappings) {
-        llvm::outs() << "External entry: " << external_func->getName().str() << "\n";
+    for (auto &[external_func, paths_to_target_func]: mappings) {
+        llvm::outs() << "External entry: " << external_func.key << "\n";
         for (auto &target_func: paths_to_target_func) {
-            llvm::outs() << "\tTarget Func: " << target_func.first->getName().str() << "\n";
-            for (auto &path : target_func.second) {
+            llvm::outs() << "\tTarget Func: " << target_func.first.key << "\n";
+            for (auto &path: target_func.second) {
                 llvm::outs() << "\t\t" << path->getName().str() << "\n";
             }
         }
     }
 
-    llvm::outs() << "done" << '\n';
+    // keep track for which PUF array index each function had checks inserted.
+    std::map<llvm::Function *, std::vector<llvm::Function *>> checks_inserted;
+    std::map<MapKey, std::vector<FunctionCallReplacementInfo>, MapKeyComparison> tt;
+    for (auto &[external_entry, paths]: mappings) {
+        uint32_t seed = std::accumulate(external_entry.key.begin(), external_entry.key.end(), 0);
+        auto rng = RandomRNG(seed);
+
+        for (auto &[function_call_to_replace, path]: paths) {
+            uint32_t function_call_to_replace_address =
+                    compiled_functions_metadata[function_call_to_replace.key].base.offset == 0 ?
+                    uint32_t(uintptr_t(function_call_to_replace.function)) : // take a placeholder address.
+                    compiled_functions_metadata[function_call_to_replace.key].base.offset;
+            // randomly choose at which PUF response in the PUF array this path will wait.
+            int32_t puf_arr_index = random_i32(puf_array.second, rng);
+            crossover::Enrollment *enrollment = enrollments.request_at(puf_arr_index);
+            assert(enrollment != nullptr);
+            // randomly choose at which function the instruction will be inserted.
+            auto *function = *RandomElementRNG(path.begin(), path.end(), rng);
+
+            bool exists = std::any_of(
+                    checks_inserted[function_call_to_replace.function].begin(),
+                    checks_inserted[function_call_to_replace.function].end(),
+                    [&](const auto &check) { return check == function; }
+            );
+            if (exists) {
+                continue;
+            }
+            checks_inserted[function_call_to_replace.function].push_back(function);
+
+            tt[MapKey{function, function->getName().str()}].emplace_back(FunctionCallReplacementInfo{
+                    function_call_to_replace.function,
+                    puf_arr_index,
+                    enrollment->auth_value,
+                    function_call_to_replace_address
+            });
+
+        }
+    }
+
+    for (auto &[key, v]: tt) {
+        for (auto &v: v) {
+            llvm::outs() << "Function: " << key.function->getName().str() << "\n"
+                         << "\t" << "Will calculate address: " << v.function_call_to_replace_address << "\n"
+                         << "\t" << "To access function: " << v.funcion_call_to_replace->getName().str() << "\n"
+                         << "\t" << "Will use PUF: (idx) " << v.puff_arr_index << " (value) "
+                         << v.puff_response_at_offset
+                         << "\n"
+                         << "\t" << "Will replace address at index: "
+                         << lookup_table.second[v.funcion_call_to_replace] << "\n";
+        }
+
+        generate_block_until_puf_response(
+                lookup_table,
+                key.function,
+                v,
+                puf_array.first
+        );
+    }
+}
+
+void PufPatcher::generate_block_until_puf_response(
+        std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
+        llvm::Function *function_to_add_code,
+        std::vector<FunctionCallReplacementInfo> &replacement_info,
+        llvm::GlobalVariable *puf_array
+) {
+    // Implement
+    // puf_offsets[...]
+    // lookup_table_offsets[...]
+    // reference_values[...]
+    // offset_reader = 0x0;
+    // while (puf_array[puff_offsets[offset_reader]] == 0) {
+    //  keep busy to block.
+    // }
+    // lookup_table[lookup_table_offsets[offset_reader]] = puf_array[puff_offsets[offset_reader]] + reference_values[offset_reader];
+    auto &ctx = function_to_add_code->getParent()->getContext();
+
+    auto &function_entry_block = function_to_add_code->getEntryBlock();
+
+    auto new_entry_block = llvm::BasicBlock::Create(
+            ctx,
+            "new_entry_block",
+            function_to_add_code,
+            &function_entry_block
+    );
+
+    llvm::IRBuilder<> Builder(new_entry_block);
+
+    // Create puff_offsets[...]
+    auto puf_offsets_typ = llvm::ArrayType::get(LLVM_I32(ctx), replacement_info.size());
+    auto *puf_offsets_ptr = Builder.CreateAlloca(puf_offsets_typ);
+
+    // Create lookup_table_offsets[...]
+    auto lookup_table_offsets_typ = llvm::ArrayType::get(LLVM_I32(ctx), replacement_info.size());
+    auto *lookup_table_offsets_ptr = Builder.CreateAlloca(lookup_table_offsets_typ);
+
+    // Create reference_values[...]
+    auto reference_values_typ = llvm::ArrayType::get(LLVM_I32(ctx), replacement_info.size());
+    auto *reference_value_ptr = Builder.CreateAlloca(reference_values_typ);
+
+    std::vector<llvm::Constant *> puf_offsets_data;
+    std::vector<llvm::Constant *> lookup_table_offsets_data;
+    std::vector<llvm::Constant *> reference_values_data;
+
+    for (auto &info: replacement_info) {
+        assert(lookup_table.second.find(info.funcion_call_to_replace) != lookup_table.second.end());
+        puf_offsets_data.push_back(LLVM_CONST_I32(ctx, info.puff_arr_index));
+        lookup_table_offsets_data.push_back(LLVM_CONST_I32(ctx, lookup_table.second[info.funcion_call_to_replace]));
+        reference_values_data.push_back(
+                LLVM_CONST_I32(ctx, info.function_call_to_replace_address - info.puff_response_at_offset));
+    }
+
+    Builder.CreateStore(llvm::ConstantArray::get(puf_offsets_typ, puf_offsets_data), puf_offsets_ptr);
+    Builder.CreateStore(llvm::ConstantArray::get(lookup_table_offsets_typ, lookup_table_offsets_data),
+                        lookup_table_offsets_ptr);
+    Builder.CreateStore(llvm::ConstantArray::get(reference_values_typ, reference_values_data), reference_value_ptr);
+
+    // Create offset_reader = 0x0
+    auto *offsets_reader_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
+    Builder.CreateStore(LLVM_CONST_I32(ctx, 0), offsets_reader_ptr);
+
+    // Loop header
+    auto *loop_header_bb = llvm::BasicBlock::Create(ctx, "loop_header", function_to_add_code, &function_entry_block);
+    Builder.CreateBr(loop_header_bb);
+    Builder.SetInsertPoint(loop_header_bb);
+
+    // Load current index to wait on.
+    // puf_array[puf_offsets[offset_reader]]
+    auto puf_array_ptr = Builder.CreateInBoundsGEP(
+            puf_array->getValueType(),
+            puf_array,
+            {
+                    LLVM_CONST_I32(ctx, 0),
+                    Builder.CreateLoad(
+                            LLVM_I32(ctx),
+                            Builder.CreateInBoundsGEP(
+                                    puf_offsets_typ,
+                                    puf_offsets_ptr,
+                                    {
+                                            LLVM_CONST_I32(ctx, 0),
+                                            Builder.CreateLoad(LLVM_I32(ctx), offsets_reader_ptr)
+                                    }
+                            )
+                    )
+
+            }
+    );
+
+    // check if 0
+    auto condition = Builder.CreateICmpEQ(Builder.CreateLoad(LLVM_U32(ctx), puf_array_ptr), LLVM_CONST_I32(ctx, 0));
+    auto true_block = llvm::BasicBlock::Create(ctx, "puf_loaded", function_to_add_code, &function_entry_block);
+    auto false_block = llvm::BasicBlock::Create(ctx, "puf_not_loaded", function_to_add_code, &function_entry_block);
+    Builder.CreateCondBr(condition, false_block, true_block);
+
+    // if 0 sleep 5 go back.
+    Builder.SetInsertPoint(false_block);
+    Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, 5)});
+    Builder.CreateBr(loop_header_bb);
+
+    // If not 0
+    // calculate lookup_table[func_index] = puf_response + ref_value
+    // increment to process next element
+    // else we are done.
+    Builder.SetInsertPoint(true_block);
+    // lookup_table[lookup_table_offsets[offset_reader]]
+    auto lookup_table_ptr = Builder.CreateInBoundsGEP(
+            lookup_table.first->getValueType(),
+            lookup_table.first,
+            {
+                    LLVM_CONST_I32(ctx, 0),
+                    Builder.CreateLoad(
+                            LLVM_I32(ctx),
+                            Builder.CreateInBoundsGEP(
+                                    lookup_table_offsets_typ,
+                                    lookup_table_offsets_ptr,
+                                    {
+                                            LLVM_CONST_I32(ctx, 0),
+                                            Builder.CreateLoad(LLVM_I32(ctx), offsets_reader_ptr)
+                                    }
+                            )
+                    )
+            }
+    );
+
+    // lookup_table[lookup_table_offsets[offset_reader]] = puf_array[puf_offsets[offset_reader]] + reference_values[offset_reader]
+    Builder.CreateStore(
+            Builder.CreateAdd(
+                    Builder.CreateLoad(LLVM_U32(ctx), puf_array_ptr),
+                    Builder.CreateLoad(
+                            LLVM_U32(ctx),
+                            Builder.CreateInBoundsGEP(
+                                    reference_values_typ,
+                                    reference_value_ptr,
+                                    {
+                                            LLVM_CONST_I32(ctx, 0),
+                                            Builder.CreateLoad(LLVM_U32(ctx), offsets_reader_ptr)
+                                    }
+                            )
+                    )
+            ),
+            lookup_table_ptr
+    );
+
+    // offset_reader = offset_reader + 1
+    Builder.CreateStore(
+            Builder.CreateAdd(
+                    Builder.CreateLoad(LLVM_I32(ctx), offsets_reader_ptr),
+                    LLVM_CONST_I32(ctx, 1)
+            ),
+            offsets_reader_ptr
+    );
+
+    // If still items to process go back to header else continue
+    condition = Builder.CreateICmpEQ(
+            Builder.CreateLoad(LLVM_I32(ctx), offsets_reader_ptr), LLVM_CONST_I32(ctx, replacement_info.size())
+    );
+    Builder.CreateCondBr(condition, &function_entry_block, loop_header_bb);
+
+    assert(&function_to_add_code->getEntryBlock() == new_entry_block);
 }
 
 //------------------------------------------------------

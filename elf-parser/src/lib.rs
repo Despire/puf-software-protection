@@ -34,7 +34,7 @@ impl std::error::Error for ArgError {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct HashRequest {
+pub struct MetadataRequest {
     // multiplier used in the hash function.
     #[serde(rename = "constant")]
     pub constant: u32,
@@ -44,15 +44,37 @@ pub struct HashRequest {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct OffsetRequest {
+    #[serde(rename = "function")]
+    pub function: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct Input {
-    #[serde(rename = "requests")]
-    pub requests: Vec<HashRequest>,
+    #[serde(rename = "function_metadata")]
+    pub function_metadata: Vec<MetadataRequest>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Output {
+    #[serde(rename = "metadata")]
+    pub metadata: Vec<Function>,
+    #[serde(rename = "offsets")]
+    pub offsets: Vec<FunctionBase>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FunctionBase {
+    #[serde(rename = "function")]
+    pub function: String,
+    #[serde(rename = "offset")]
+    pub offset: u32,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Function {
-    #[serde(rename = "function")]
-    pub function: String,
+    #[serde(rename = "base")]
+    pub base: FunctionBase,
     #[serde(rename = "hash")]
     pub hash: u32,
     #[serde(rename = "constant")]
@@ -111,14 +133,14 @@ pub fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let file = fs::read(&cfg.elf_path)?;
     let elf = Elf::parse(&file)?;
 
-    let functions: Vec<(String, u32, elf::Sym)> = elf
+    let functions_metadata: Vec<(String, u32, elf::Sym)> = elf
         .syms
         .iter()
         .map(|sym| {
             if let Some(str_name) = elf.strtab.get_at(sym.st_name) {
                 let str_name = String::from(str_name);
 
-                for request in &input.requests {
+                for request in &input.function_metadata {
                     if request.function == str_name {
                         return Some((str_name, request.constant, sym));
                     }
@@ -128,9 +150,23 @@ pub fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         })
         .filter_map(|x| x)
         .collect();
+    assert!(functions_metadata.len() == input.function_metadata.len());
 
-    let mut fncs: Vec<Function> = Vec::new();
-    for (str_name, constant, sym) in functions {
+    let functions_offset: Vec<(String, elf::Sym)> = elf
+        .syms
+        .iter()
+        .map(|sym| {
+            if let Some(str_name) = elf.strtab.get_at(sym.st_name) {
+                let str_name = String::from(str_name);
+                return Some((str_name, sym));
+            }
+            None
+        })
+        .filter_map(|x| x)
+        .collect();
+
+    let mut out_metadata: Vec<Function> = Vec::new();
+    for (str_name, constant, sym) in functions_metadata {
         let func_addr = sym.st_value;
         let func_size = sym.st_size;
 
@@ -143,8 +179,11 @@ pub fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
 
         let hash = hash5(&be_instructions, constant);
 
-        fncs.push(Function {
-            function: str_name,
+        out_metadata.push(Function {
+            base: FunctionBase {
+                function: str_name,
+                offset: func_addr as u32,
+            },
             hash,
             constant,
             instruction_count: be_instructions.len(),
@@ -152,8 +191,20 @@ pub fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let out = std::fs::File::create(&cfg.output_path)?;
-    serde_json::to_writer_pretty(out, &fncs)?;
+    let mut out_offsets: Vec<FunctionBase> = Vec::new();
+    for (str_name, sym) in functions_offset {
+        out_offsets.push(FunctionBase {
+            function: str_name,
+            offset: sym.st_value as u32,
+        });
+    }
+
+    let out_file = std::fs::File::create(&cfg.output_path)?;
+    let out = Output {
+        offsets: out_offsets,
+        metadata: out_metadata,
+    };
+    serde_json::to_writer_pretty(out_file, &out)?;
     Ok(())
 }
 

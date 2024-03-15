@@ -1,8 +1,6 @@
-set(LLVM_PUF_PLUGINS
-        PufPatcher
-)
+set(LLVM_PUF_PLUGINS PufPatcher)
 
-set(PufPatcher_SOURCES PufPatcher.cpp Checksum.cpp)
+set(PufPatcher_SOURCES PufPatcher.cpp Checksum.cpp Crossover.cpp CtorDtor.cpp Dependencies.cpp)
 
 foreach (plugin ${LLVM_PUF_PLUGINS})
     add_library(${plugin} SHARED ${${plugin}_SOURCES})

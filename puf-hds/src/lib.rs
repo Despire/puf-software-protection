@@ -1,16 +1,20 @@
-mod reed_solomon;
 mod enroll;
+mod reed_solomon;
 
 use enroll::DRAMCells;
 
-use std::{env, fs, io, u64};
+use crate::enroll::Enrollment;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use crate::enroll::Enrollment;
+use std::{env, fs, u64};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub enum Sizes { Byte, KB, MB }
+pub enum Sizes {
+    Byte,
+    KB,
+    MB,
+}
 
 impl Sizes {
     fn as_usize(&self) -> usize {
@@ -23,7 +27,10 @@ impl Sizes {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub enum WordSize { BW16, BW32 } // BW => Bus Width
+pub enum WordSize {
+    BW16,
+    BW32,
+} // BW => Bus Width
 
 impl WordSize {
     fn as_word_in_bytes(&self) -> usize {
@@ -32,12 +39,14 @@ impl WordSize {
             WordSize::BW32 => 4,
         }
     }
-    fn as_word_in_bits(&self) -> usize { self.as_word_in_bytes() * 8 }
+    fn as_word_in_bits(&self) -> usize {
+        self.as_word_in_bytes() * 8
+    }
 
     fn max(&self) -> usize {
         match self {
             WordSize::BW16 => u16::MAX as usize,
-            WordSize::BW32 => u32::MAX as usize
+            WordSize::BW32 => u32::MAX as usize,
         }
     }
 
@@ -90,10 +99,18 @@ pub struct PUFConfig {
 }
 
 impl PUFConfig {
-    fn size_in_bytes(&self) -> usize { self.unit.as_usize() * self.size }
-    fn blocks(&self) -> usize { self.size_in_bytes() / self.bus_width.as_word_in_bytes() }
-    fn row_width(&self) -> usize { self.page_size_words * self.bus_width.as_word_in_bytes() }
-    fn num_of_rows(&self) -> usize { self.size_in_bytes() / self.row_width() }
+    fn size_in_bytes(&self) -> usize {
+        self.unit.as_usize() * self.size
+    }
+    fn blocks(&self) -> usize {
+        self.size_in_bytes() / self.bus_width.as_word_in_bytes()
+    }
+    fn row_width(&self) -> usize {
+        self.page_size_words * self.bus_width.as_word_in_bytes()
+    }
+    fn num_of_rows(&self) -> usize {
+        self.size_in_bytes() / self.row_width()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -129,29 +146,14 @@ pub struct Config {
 
 impl Config {
     pub fn new(mut args: env::Args) -> Result<Config, Box<dyn std::error::Error>> {
-        let input = args.nth(1).unwrap_or_else(|| {
-            println!("no path to config was supplied reading from stdin");
-            String::new()
-        });
+        let input = args.nth(1).unwrap_or_else(|| String::new());
 
         if !input.is_empty() {
             let cfg = fs::read_to_string(input)?;
             return Ok(serde_json::from_str(&cfg)?);
         }
 
-        let mut input = String::new();
-        io::stdin().read_to_string(&mut input)?;
-
-        match serde_json::from_str::<Config>(&input) {
-            Ok(cfg) => Ok(cfg),
-            Err(err) => {
-                if err.is_syntax() {
-                    Err("input is not a valid JSON")?
-                } else {
-                    Err(err)?
-                }
-            }
-        }
+        Err(format!("path to config not specified as first argument. usage: cargo run <path-to-config.json>"))?
     }
 }
 
@@ -168,15 +170,47 @@ pub fn generate(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         let stable_cells_count = measurement.0.iter().map(|row| row.len()).sum::<usize>();
         let unstable_cells_count = measurement.1.iter().map(|row| row.len()).sum::<usize>();
         let stable_0_cells_count = measurement.2.iter().map(|row| row.len()).sum::<usize>();
-        println!("Stats related to \"Decay Timeout: {}s\"", cfg.decay_config.get_measurement(i));
+        println!(
+            "Stats related to \"Decay Timeout: {}s\"",
+            cfg.decay_config.get_measurement(i)
+        );
         println!("\t stable_cells(common to all measurements, not present in previous decay timeout): {}", stable_cells_count);
-        println!("\t unstable_cells(across all measurements, not present in previous decay timeout): {}", unstable_cells_count);
-        println!("\t stable_0_cells(common to all measurements): {}", stable_0_cells_count);
+        println!(
+            "\t unstable_cells(across all measurements, not present in previous decay timeout): {}",
+            unstable_cells_count
+        );
+        println!(
+            "\t stable_0_cells(common to all measurements): {}",
+            stable_0_cells_count
+        );
 
         let enough_entropy = (stable_cells_count > 32) && (stable_0_cells_count > 32);
-        println!("\t able to generate 32bit random value using DRAM cells: {}", if enough_entropy { "yes" } else { "no " });
+        println!(
+            "\t able to generate 32bit random value using DRAM cells: {}",
+            if enough_entropy { "yes" } else { "no" }
+        );
         if !enough_entropy {
-            return Err(format!("measurement {} has not enough stable cells to encode a 32bit value", cfg.decay_config.get_measurement(i)))?;
+            return Err(format!(
+                "measurement {} has not enough stable cells to encode a 32bit value",
+                cfg.decay_config.get_measurement(i)
+            ))?;
+        }
+    }
+
+    if cfg.enrollment.timeout_requests.is_empty() {
+        println!("Warning: no timeouts specified inside 'enrollment.timeout_requests'");
+    }
+
+    // check if the requested decay times match the enrolled data.
+    for request in &cfg.enrollment.timeout_requests {
+        let mut found = false;
+        for (i, _) in cells.iter().enumerate() {
+            if cfg.decay_config.get_measurement(i) as u32 == *request {
+                found = true;
+            }
+        }
+        if !found {
+            return Err(format!("You requested a decay timeout at {} but no enrollment for this timeout was measured", request))?;
         }
     }
 
@@ -191,7 +225,9 @@ pub fn generate(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn measurements(cfg: &Config) -> Result<Vec<(Vec<File>, Option<Vec<File>>)>, Box<dyn std::error::Error>> {
+fn measurements(
+    cfg: &Config,
+) -> Result<Vec<(Vec<File>, Option<Vec<File>>)>, Box<dyn std::error::Error>> {
     (0..cfg.decay_config.num_of_measurements as usize)
         .map(|measurement| {
             let timeout = cfg.decay_config.get_measurement(measurement);
@@ -203,12 +239,22 @@ fn measurements(cfg: &Config) -> Result<Vec<(Vec<File>, Option<Vec<File>>)>, Box
                 Vec::new()
             };
 
-            Ok((current_measurements, if previous_measurements.is_empty() { None } else { Some(previous_measurements) }))
+            Ok((
+                current_measurements,
+                if previous_measurements.is_empty() {
+                    None
+                } else {
+                    Some(previous_measurements)
+                },
+            ))
         })
         .collect()
 }
 
-fn collect_next_word(measurements: Option<&mut [File]>, bus_width: &WordSize) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+fn collect_next_word(
+    measurements: Option<&mut [File]>,
+    bus_width: &WordSize,
+) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
     match measurements {
         Some(files) => files
             .iter_mut()
@@ -223,7 +269,9 @@ fn collect_next_word(measurements: Option<&mut [File]>, bus_width: &WordSize) ->
     }
 }
 
-fn extract_cells(cfg: &Config) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>, Box<dyn std::error::Error>> {
+fn extract_cells(
+    cfg: &Config,
+) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>, Box<dyn std::error::Error>> {
     measurements(cfg)?
         .iter_mut()
         .map(|pair| {
@@ -252,7 +300,9 @@ fn extract_cells(cfg: &Config) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>,
                     (0..cfg.puf_config.bus_width.as_word_in_bits())
                         .filter(|shift| current_flips & (1 << shift) != 0x0)
                         .for_each(|shift| {
-                            let ptr = (block as u32) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u32;
+                            let ptr = (block as u32)
+                                << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros())
+                                | shift as u32;
                             let row_index = block / cfg.puf_config.page_size_words;
                             stable_1_cells[row_index].push(ptr);
                         });
@@ -262,7 +312,9 @@ fn extract_cells(cfg: &Config) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>,
                     (0..cfg.puf_config.bus_width.as_word_in_bits())
                         .filter(|shift| current_common_non_flips & (1 << shift) != 0x0)
                         .for_each(|shift| {
-                            let ptr = (block as u32) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u32;
+                            let ptr = (block as u32)
+                                << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros())
+                                | shift as u32;
                             let row_index = block / cfg.puf_config.page_size_words;
                             stable_0_cells[row_index].push(ptr);
                         });
@@ -273,21 +325,28 @@ fn extract_cells(cfg: &Config) -> Result<Vec<(DRAMCells, DRAMCells, DRAMCells)>,
                     (0..cfg.puf_config.bus_width.as_word_in_bits())
                         .filter(|shift| unstable_flips & (1 << shift) != 0x0)
                         .for_each(|shift| {
-                            let ptr = (block as u32) << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros()) | shift as u32;
+                            let ptr = (block as u32)
+                                << (cfg.puf_config.bus_width.as_word_in_bits().trailing_zeros())
+                                | shift as u32;
                             let row_index = block / cfg.puf_config.page_size_words;
                             unstable_cells[row_index].push(ptr);
                         })
                 }
             }
             Ok((stable_1_cells, unstable_cells, stable_0_cells))
-        }).collect()
+        })
+        .collect()
 }
 
-fn collect_measurements(cfg: &Config, timeout: i32) -> Result<Vec<File>, Box<dyn std::error::Error>> {
+fn collect_measurements(
+    cfg: &Config,
+    timeout: i32,
+) -> Result<Vec<File>, Box<dyn std::error::Error>> {
     let mut current_measurements = Vec::new();
 
     for iter in 1..=cfg.decay_config.replication {
-        let path = PathBuf::from(&cfg.path).join(format!("{}_{}_{}sec", cfg.common_prefix, iter, timeout));
+        let path =
+            PathBuf::from(&cfg.path).join(format!("{}_{}_{}sec", cfg.common_prefix, iter, timeout));
         current_measurements.push(File::open(path)?);
     }
 

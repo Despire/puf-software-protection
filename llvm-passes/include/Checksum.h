@@ -14,14 +14,9 @@
 
 struct Checksum {
 public:
-    void run(llvm::Module &M, std::vector<llvm::Function*> funcs);
+    void run(llvm::Module &M, std::vector<llvm::Function *> funcs);
 
 private:
-
-    void write_func_requests(const std::string &outfile, const std::vector<std::string> &funcs) noexcept;
-
-    std::unordered_map<std::string, crossover::Function> read_func_metadata(const std::string &infile);
-
     std::string calculate_parity(const crossover::Function &FuncMetadata) noexcept;
 
     llvm::InlineAsm *checksum(llvm::LLVMContext &ctx) noexcept;
