@@ -10,7 +10,7 @@ static llvm::cl::opt<std::string> EnrollmentFile(
         "enrollment",
         llvm::cl::desc("Enrollment json file that was generated"),
         llvm::cl::value_desc("string"),
-        llvm::cl::Required
+        llvm::cl::Optional
 );
 
 static llvm::cl::opt<std::string> OutputFile(
@@ -33,21 +33,48 @@ static llvm::cl::opt<std::string> InputFile(
 
 llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisManager &AM) {
     init_deps(M);
+
+    // Store which functions are we considering in this LLVM pass
+    // for double-checking which of the functions will be in the binary.
+    if (!OutputFile.empty()) {
+        // collect functions for which we have definitions.
+        // These are the function we will patch.
+        std::vector<std::string> func_names;
+        for (auto &f: M) {
+            if (f.isIntrinsic() || f.isDeclaration() || f.empty()) {
+                continue;
+            }
+            func_names.push_back(f.getName().str());
+        }
+        crossover::write_func_requests(OutputFile, func_names);
+        return llvm::PreservedAnalyses::all();
+    }
+
     auto enrollments = crossover::read_enrollment_data(EnrollmentFile);
 
-    std::vector<std::string> func_names;
+    auto table = crossover::read_func_metadata(InputFile);
+    if (table.empty()) {
+        llvm::outs() << "InputFile empty: patching skeleton only" << '\n';
+        return llvm::PreservedAnalyses::all();
+    }
+
     std::vector<llvm::Function *> functions_to_patch;
-    for (auto &f: M) {
-        if (f.isIntrinsic() || f.isDeclaration() || f.empty()) {
-            continue;
+    for (auto &f : M) {
+        if (f.getName().str() == "__rust_alloc_error_handler") {
+            llvm::outs() << "adding checksum to: " << f.getName().str() << "\n";
         }
-        functions_to_patch.push_back(&f);
-        func_names.push_back(f.getName().str());
+
+        if (table.find(f.getName().str()) != table.end()) {
+            functions_to_patch.push_back(&f);
+        }
     }
 
     // Analyse call graph before replacing with indirect calls and before adding
     // PUF thread.
     auto call_graph = llvm::CallGraphAnalysis().run(M, AM);
+
+    // Find all external entry points into the IR module.
+    auto external_entry_points = find_all_external_entry_points(M, call_graph);
 
     // Creates a global array where the PUF measurements will be stored.
     auto puf_array = create_puf_array(M, enrollments);
@@ -57,31 +84,16 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
     // After this function only the call_graph should be used for identifying the calls.
     auto lookup_table = replace_calls_with_lookup_table(M, functions_to_patch);
 
-    // Store which functions are we considering in this LLVM pass
-    // and alongisde it also the calls that are made within those functions.
-    // The output JSON will be used by other program to generate the offsets
-    // and other data within the ELF binary.
-    if (!OutputFile.empty()) {
-        crossover::write_func_requests(
-                OutputFile,
-                func_names,
-                lookup_table
-        );
-    }
-
-    auto table = crossover::read_func_metadata(InputFile);
-    if (table.empty()) {
-        llvm::outs() << "InputFile empty: patching skeleton only" << '\n';
-    }
-
-    // Identifies all possibly external entry points and determines at which places
-    // the functions addresses in the lookup table should be computed.
+    // Given the identified entry points into the IR module.
+    // determines at which places the functions addresses in
+    // the lookup table should be computed.
     insert_address_calculations(
             table,
             enrollments,
             puf_array,
             lookup_table,
-            call_graph
+            call_graph,
+            external_entry_points
     );
 
     // open the /dev/puf in a ctor
@@ -96,7 +108,11 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
     spawn_puf_thread(M, puf_array, ctor, enrollments);
 
     // add checksums of the patched functions.
-//    checksum.run(M, funcs);
+    checksum.run(
+            M,
+            functions_to_patch,
+            table
+    );
 
     return llvm::PreservedAnalyses::none();
 }
@@ -107,7 +123,7 @@ std::pair<
 >
 PufPatcher::replace_calls_with_lookup_table(
         llvm::Module &M,
-        std::vector<llvm::Function *> &funcs
+        const std::vector<llvm::Function *> &funcs
 ) {
     std::map<std::string, std::vector<llvm::CallBase *>> mappings;
 
@@ -229,14 +245,14 @@ PufPatcher::replace_calls_with_lookup_table(
 }
 
 void PufPatcher::insert_address_calculations(
-        std::unordered_map<std::string, crossover::Function> &compiled_functions_metadata,
-        crossover::EnrollData &enrollments,
-        std::pair<llvm::GlobalVariable *, size_t> &puf_array,
-        std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
-        llvm::CallGraph &call_graph
+        const std::unordered_map<std::string, crossover::FunctionInfo> &compiled_functions_metadata,
+        const crossover::EnrollData &enrollments,
+        const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
+        const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
+        const llvm::CallGraph &call_graph,
+        const std::set<llvm::Function *> &external_entry_points
 ) {
     auto &[look_up_table_global, lookup_table_call_mappings] = lookup_table;
-    auto external_entry_points = external_nodes(call_graph);
 
     // to guarantee the same traversal each time the keys in the maps need to be
     // deterministic on each run.
@@ -254,8 +270,11 @@ void PufPatcher::insert_address_calculations(
     using MapTableFunctionToPaths = std::map<MapKey, std::vector<llvm::Function *>, MapKeyComparison>;
     using MapExternalPointsToTableFunctions = std::map<MapKey, MapTableFunctionToPaths, MapKeyComparison>;
 
-    // all places where the control flow will check and block until the
-    // necessary PUF response for the computation of the destination address is received.
+    // For each function that has an index in the lookup table
+    // we need to find all the paths that call this function from all of
+    // the possible external entry points into the IR module.
+    // The path will represent all the functions where the insertion is possible
+    // before making a call via an indirect pointer into the lookup table.
     MapExternalPointsToTableFunctions mappings;
     for (auto &[func, _]: lookup_table_call_mappings) {
         for (auto &external_entry: external_entry_points) {
@@ -270,6 +289,7 @@ void PufPatcher::insert_address_calculations(
         }
     }
 
+    // Debug Print collected information.
     for (auto &[external_func, paths_to_target_func]: mappings) {
         llvm::outs() << "External entry: " << external_func.key << "\n";
         for (auto &target_func: paths_to_target_func) {
@@ -282,23 +302,33 @@ void PufPatcher::insert_address_calculations(
 
     // keep track for which PUF array index each function had checks inserted.
     std::map<llvm::Function *, std::vector<llvm::Function *>> checks_inserted;
-    std::map<MapKey, std::vector<FunctionCallReplacementInfo>, MapKeyComparison> tt;
+    std::map<MapKey, std::vector<FunctionCallReplacementInfo>, MapKeyComparison> collected_replacement_info;
+
+    // For each external entry point and the collected paths from those external entry points
+    // We randomly choose a function from that path where we will insert the blocking until the puf.
+    // If the same function is selected multiple times (possible, since multiple external paths
+    // can call that function) it will wait until all the requested responses of PUF will collected.
     for (auto &[external_entry, paths]: mappings) {
         uint32_t seed = std::accumulate(external_entry.key.begin(), external_entry.key.end(), 0);
         auto rng = RandomRNG(seed);
 
         for (auto &[function_call_to_replace, path]: paths) {
-            uint32_t function_call_to_replace_address =
-                    compiled_functions_metadata[function_call_to_replace.key].base.offset == 0 ?
-                    uint32_t(uintptr_t(function_call_to_replace.function)) : // take a placeholder address.
-                    compiled_functions_metadata[function_call_to_replace.key].base.offset;
+            bool emptyPatch =
+                    compiled_functions_metadata.find(function_call_to_replace.key) == compiled_functions_metadata.end();
+            uint32_t function_call_to_replace_address = emptyPatch ?
+                                                        uint32_t(uintptr_t(function_call_to_replace.function))
+                                                                   : // take a placeholder address.
+                                                        compiled_functions_metadata.at(
+                                                                function_call_to_replace.key).base.offset;
+
             // randomly choose at which PUF response in the PUF array this path will wait.
             int32_t puf_arr_index = random_i32(puf_array.second, rng);
-            crossover::Enrollment *enrollment = enrollments.request_at(puf_arr_index);
+            const crossover::Enrollment *enrollment = enrollments.request_at(puf_arr_index);
             assert(enrollment != nullptr);
             // randomly choose at which function the instruction will be inserted.
             auto *function = *RandomElementRNG(path.begin(), path.end(), rng);
 
+            // so that we don't have duplicates in the same function.
             bool exists = std::any_of(
                     checks_inserted[function_call_to_replace.function].begin(),
                     checks_inserted[function_call_to_replace.function].end(),
@@ -309,18 +339,24 @@ void PufPatcher::insert_address_calculations(
             }
             checks_inserted[function_call_to_replace.function].push_back(function);
 
-            tt[MapKey{function, function->getName().str()}].emplace_back(FunctionCallReplacementInfo{
-                    function_call_to_replace.function,
-                    puf_arr_index,
-                    enrollment->auth_value,
-                    function_call_to_replace_address
-            });
+            collected_replacement_info[MapKey{function, function->getName().str()}].emplace_back(
+                    FunctionCallReplacementInfo{
+                            function_call_to_replace.function,
+                            puf_arr_index,
+                            enrollment->auth_value,
+                            function_call_to_replace_address
+                    });
 
         }
     }
 
-    for (auto &[key, v]: tt) {
-        for (auto &v: v) {
+    // Finally, patch the functions.
+    for (auto &[key, info]: collected_replacement_info) {
+        // Debug print.
+        // These addresses should exactly match the ones in the binary when compiled.
+        // If they don't match, some of the inserted operations are not deterministic
+        // and the compiler changes the compiled code in a non-deterministic way.
+        for (auto &v: info) {
             llvm::outs() << "Function: " << key.function->getName().str() << "\n"
                          << "\t" << "Will calculate address: " << v.function_call_to_replace_address << "\n"
                          << "\t" << "To access function: " << v.funcion_call_to_replace->getName().str() << "\n"
@@ -328,23 +364,23 @@ void PufPatcher::insert_address_calculations(
                          << v.puff_response_at_offset
                          << "\n"
                          << "\t" << "Will replace address at index: "
-                         << lookup_table.second[v.funcion_call_to_replace] << "\n";
+                         << lookup_table.second.at(v.funcion_call_to_replace) << "\n";
         }
 
         generate_block_until_puf_response(
                 lookup_table,
                 key.function,
-                v,
+                info,
                 puf_array.first
         );
     }
 }
 
 void PufPatcher::generate_block_until_puf_response(
-        std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
-        llvm::Function *function_to_add_code,
-        std::vector<FunctionCallReplacementInfo> &replacement_info,
-        llvm::GlobalVariable *puf_array
+        const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
+        llvm::Function *const function_to_add_code,
+        const std::vector<FunctionCallReplacementInfo> &replacement_info,
+        llvm::GlobalVariable *const puf_array
 ) {
     // Implement
     // puf_offsets[...]
@@ -387,7 +423,7 @@ void PufPatcher::generate_block_until_puf_response(
     for (auto &info: replacement_info) {
         assert(lookup_table.second.find(info.funcion_call_to_replace) != lookup_table.second.end());
         puf_offsets_data.push_back(LLVM_CONST_I32(ctx, info.puff_arr_index));
-        lookup_table_offsets_data.push_back(LLVM_CONST_I32(ctx, lookup_table.second[info.funcion_call_to_replace]));
+        lookup_table_offsets_data.push_back(LLVM_CONST_I32(ctx, lookup_table.second.at(info.funcion_call_to_replace)));
         reference_values_data.push_back(
                 LLVM_CONST_I32(ctx, info.function_call_to_replace_address - info.puff_response_at_offset));
     }

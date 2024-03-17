@@ -15,14 +15,12 @@ namespace crossover {
                            {"function", hr.function}};
     }
 
-    struct Input {
+    struct ReadRequest {
         std::vector<MetadataRequest> function_metadata;
     };
 
-    inline void to_json(nlohmann::json &j, const Input &input) {
-        j = nlohmann::json{
-                {"function_metadata", input.function_metadata},
-        };
+    inline void to_json(nlohmann::json &j, const ReadRequest &input) {
+        j = nlohmann::json{{"function_metadata", input.function_metadata}};
     }
 
     struct FunctionBase {
@@ -35,30 +33,24 @@ namespace crossover {
         j.at("offset").get_to(e.offset);
     }
 
-    struct Function {
+    struct FunctionInfo {
         FunctionBase base;
-        uint64_t hash = 0;
         uint64_t constant = 0;
         size_t instruction_count = 0;
-        std::vector<uint32_t> instructions;
     };
 
-    inline void from_json(const nlohmann::json &j, Function &e) {
+    inline void from_json(const nlohmann::json &j, FunctionInfo &e) {
         j.at("base").get_to(e.base);
-        j.at("hash").get_to(e.hash);
         j.at("constant").get_to(e.constant);
         j.at("instruction_count").get_to(e.instruction_count);
-        j.at("instructions").get_to(e.instructions);
     }
 
-    struct ElfData {
-        std::vector<Function> metadata;
-        std::vector<FunctionBase> offsets;
+    struct ReadRequestResponse {
+        std::vector<FunctionInfo> function_metadata;
     };
 
-    inline void from_json(const nlohmann::json &j, ElfData &e) {
-        j.at("metadata").get_to(e.metadata);
-        j.at("offsets").get_to(e.offsets);
+    inline void from_json(const nlohmann::json &j, ReadRequestResponse &e) {
+        j.at("function_metadata").get_to(e.function_metadata);
     }
 
     struct Enrollment {
@@ -72,7 +64,7 @@ namespace crossover {
         std::vector<Enrollment> enrollments;
         std::vector<uint32_t> requests;
 
-        Enrollment *request_at(uint32_t request_timeout) {
+        [[nodiscard]] const Enrollment *request_at(uint32_t request_timeout) const {
             uint32_t decay_timeout = requests[request_timeout];
 
             for (auto &enrollment: enrollments) {
@@ -99,11 +91,10 @@ namespace crossover {
 
     void write_func_requests(
             const std::string &outfile,
-            const std::vector<std::string> &funcs,
-            const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table
+            const std::vector<std::string> &funcs
     );
 
-    std::unordered_map<std::string, crossover::Function> read_func_metadata(const std::string &infile);
+    std::unordered_map<std::string, crossover::FunctionInfo> read_func_metadata(const std::string &infile);
 
     EnrollData read_enrollment_data(const std::string &file);
 }

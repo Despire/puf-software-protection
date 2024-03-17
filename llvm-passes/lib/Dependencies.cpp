@@ -139,7 +139,7 @@ void PufPatcher::init_deps(llvm::Module &M) {
 }
 
 std::pair<llvm::GlobalVariable *, size_t>
-PufPatcher::create_puf_array(llvm::Module &M, crossover::EnrollData &enrollment) {
+PufPatcher::create_puf_array(llvm::Module &M, const crossover::EnrollData &enrollment) {
     assert(M.getGlobalVariable("____puf_array____") == nullptr);
 
     auto &ctx = M.getContext();

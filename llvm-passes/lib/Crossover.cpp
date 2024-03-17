@@ -15,8 +15,8 @@ crossover::EnrollData crossover::read_enrollment_data(const std::string &file) {
     return j.get<crossover::EnrollData>();
 }
 
-std::unordered_map<std::string, crossover::Function> crossover::read_func_metadata(const std::string &infile) {
-    std::unordered_map<std::string, crossover::Function> table;
+std::unordered_map<std::string, crossover::FunctionInfo> crossover::read_func_metadata(const std::string &infile) {
+    std::unordered_map<std::string, crossover::FunctionInfo> table;
 
     if (infile.empty()) {
         return table;
@@ -30,9 +30,9 @@ std::unordered_map<std::string, crossover::Function> crossover::read_func_metada
     nlohmann::json j;
     inputFile >> j;
 
-    auto elf_data = j.get<crossover::ElfData>();
+    auto elf_data = j.get<crossover::ReadRequestResponse>();
 
-    for (auto &f: elf_data.metadata) {
+    for (auto &f: elf_data.function_metadata) {
         table[f.base.function] = f;
     }
 
@@ -41,8 +41,7 @@ std::unordered_map<std::string, crossover::Function> crossover::read_func_metada
 
 void crossover::write_func_requests(
         const std::string &outFile,
-        const std::vector<std::string> &funcs,
-        const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table
+        const std::vector<std::string> &funcs
 ) {
     // Create an odd number
     std::vector<crossover::MetadataRequest> function_metadata;
@@ -54,7 +53,7 @@ void crossover::write_func_requests(
         function_metadata.push_back({odd, f});
     }
 
-    crossover::Input input = {
+    crossover::ReadRequest input = {
             .function_metadata=function_metadata,
     };
 

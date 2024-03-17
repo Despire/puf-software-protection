@@ -19,43 +19,49 @@ IMAGE_ID=$(shell docker ps --filter "ancestor=bbb-cpu-arch" -q)
 all:
 	$(CMAKE) $(CMAKE_FLAGS) -S ./llvm-passes -B $(CMAKE_OUT)
 	$(MAKE) -C $(CMAKE_OUT)
-	$(MAKE) -C ./arch_emulator
 	cd ./elf-parser && $(CARGO) build --release
 	cd ./puf-hds && $(CARGO) build --release
+	$(MAKE) -C ./arch_emulator
+	$(MAKE) patch
 
 patch: 
+	mkdir -p .llvm_ir_cache
 	$(MAKE) generate-ir
-	$(MAKE) patch-llvm-ir-empty
+	cp ./arch_emulator/volume/example/target/release/deps/*.bc ./.llvm_ir_cache
+	$(MAKE) dump-functions
 	$(MAKE) compile
-	$(MAKE) generate-metadata
-	$(MAKE) generate-ir
-	$(MAKE) patch-llvm-ir-segments
-	$(MAKE) compile
-	$(MAKE) generate-metadata
-	$(MAKE) generate-ir
-	$(MAKE) patch-llvm-ir-parity
-	$(MAKE) compile
+	@while true; do \
+		$(MAKE) generate-metadata; \
+		cp ./.llvm_ir_cache/*.bc ./arch_emulator/volume/example/target/release/deps/; \
+		$(MAKE) patch-segments; \
+		$(MAKE) compile; \
+		$(MAKE) check-binary-offsets && break; \
+	done
+	$(MAKE) checksum-patch-binary
+	echo "DONE YOU CAN NOW USE YOUR BINARY"
+	rm -r .llvm_ir_cache/
 
 generate-ir:
 	docker exec $(IMAGE_ID) sh -c "cd ./example && ./s.sh"
 
-patch-llvm-ir-empty:
-	find ./arch_emulator/volume/example/target/release/deps/ -name '*.ll' | while read -r file; do \
-		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libChecksum$(LIB_EXT) -passes=checksum -out=./out.json -S $${file} -o $${file}; \
+dump-functions:
+	find ./arch_emulator/volume/example/target/release/deps/ -name '*.bc' | while read -r file; do \
+		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -outputjson=./out.json -S $${file} -o $${file}; \
 	done
 
-patch-llvm-ir-segments:
-	find ./arch_emulator/volume/example/target/release/deps/ -name '*.ll' | while read -r file; do \
-		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libChecksum$(LIB_EXT) -passes=checksum -in=./metadata.json -pskip=true -S $${file} -o $${file}; \
-	done
-
-patch-llvm-ir-parity:
-	find ./arch_emulator/volume/example/target/release/deps/ -name '*.ll' | while read -r file; do \
-		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libChecksum$(LIB_EXT) -passes=checksum -in=./metadata.json -S $${file} -o $${file}; \
+patch-segments:
+	find ./arch_emulator/volume/example/target/release/deps/ -name '*.bc' | while read -r file; do \
+		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -enrollment=./enroll.json -inputjson=./metadata.json -S $${file} -o $${file}; \
 	done
 
 generate-metadata:
-	./elf-parser/target/release/elf-parser ./out.json ./metadata.json ./arch_emulator/volume/example/target/release/deps/program
+	./elf-parser/target/release/elf-parser read ./out.json ./metadata.json ./arch_emulator/volume/example/target/release/deps/program
+
+checksum-patch-binary:
+	./elf-parser/target/release/elf-parser patch ./out.json ./arch_emulator/volume/example/target/release/deps/program
+
+check-binary-offsets:
+	./elf-parser/target/release/elf-parser check ./out.json ./metadata.json ./arch_emulator/volume/example/target/release/deps/program
 
 compile:
 	docker exec $(IMAGE_ID) sh -c "cd ./example && ./s.sh compile"
@@ -75,6 +81,7 @@ clean:
 	rm -rf $(CMAKE_OUT)
 	rm ./out.json
 	rm ./metadata.json
+	rm -r .llvm_ir_cache/
 
 
 .PHONY: all generate-ir compile generate-json-checksum patch generate-metadata patch-llvm-ir-from-metadata

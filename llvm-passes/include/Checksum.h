@@ -14,20 +14,22 @@
 
 struct Checksum {
 public:
-    void run(llvm::Module &M, std::vector<llvm::Function *> funcs);
+    void run(
+            llvm::Module &M,
+            const std::vector<llvm::Function *> &funcs,
+            const std::unordered_map<std::string, crossover::FunctionInfo> &table
+    );
 
 private:
-    std::string calculate_parity(const crossover::Function &FuncMetadata) noexcept;
-
     llvm::InlineAsm *checksum(llvm::LLVMContext &ctx) noexcept;
 
-    void add_checksum(
+    llvm::BasicBlock* add_checksum(
             llvm::LLVMContext &ctx,
             bool emptyPatch,
             llvm::Module &M,
             llvm::Function *function,
             const std::vector<llvm::Function *> &targetFuncs,
-            const std::unordered_map<std::string, crossover::Function> &allFuncsMetadata
+            const std::unordered_map<std::string, crossover::FunctionInfo> &allFuncsMetadata
     ) noexcept;
 
     void patch_function(
@@ -37,7 +39,7 @@ private:
             llvm::Function &F,
             const std::vector<llvm::Function *> &allFuncs,
             const std::vector<llvm::Function *> &targetFuncs,
-            const std::unordered_map<std::string, crossover::Function> &allFuncMetadata
+            const std::unordered_map<std::string, crossover::FunctionInfo> &allFuncMetadata
     ) noexcept;
 };
 

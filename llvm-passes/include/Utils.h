@@ -34,22 +34,6 @@ inline Iter RandomElementRNG(Iter start, Iter end, RNG &&rng) {
 template<typename RNG>
 inline int32_t random_i32(int32_t max, RNG &&rng) { return rng() % max; }
 
-inline std::vector<llvm::BasicBlock *> exitBlocks(llvm::Function &F) {
-    std::vector<llvm::BasicBlock *> result;
-
-    for (auto &BB: F) {
-        if (BB.isLandingPad()) {
-            continue;
-        }
-        auto term = BB.getTerminator();
-        if (auto *RI = llvm::dyn_cast<llvm::ReturnInst>(term)) {
-            result.push_back(&BB);
-        }
-    }
-
-    return result;
-}
-
 inline void eegcd(uint64_t a, uint64_t &x, uint64_t &y) {
     uint64_t b = uint64_t(std::numeric_limits<uint32_t>::max()) + 1;
     uint64_t x0 = 1, y0 = 0, x1 = 0, y1 = 1;
@@ -132,10 +116,24 @@ inline std::set<llvm::Function *> external_nodes(llvm::CallGraph &g) {
     return external;
 }
 
+inline std::set<llvm::Function *> find_all_external_entry_points(llvm::Module &M, llvm::CallGraph &cg) {
+    auto cg_entry_points = external_nodes(cg);
+    // We also need to consider pointers to functions as entry points
+    // as they can be passed around between functions and basicllay be another
+    // entry point into the module.
+    for (auto &F: M) {
+        if (F.hasAddressTaken()) {
+            cg_entry_points.insert(&F);
+        }
+    }
+
+    return cg_entry_points;
+}
+
 inline void internal_find_insert_points(
-        llvm::CallGraph &call_graph,
+        const llvm::CallGraph &call_graph,
         llvm::Function *entry_point,
-        llvm::Function *function_call,
+        const llvm::Function *function_call,
         std::vector<llvm::Function *> &path,
         std::vector<std::vector<llvm::Function *>> &all_paths
 ) {
@@ -176,9 +174,9 @@ inline void internal_find_insert_points(
 }
 
 inline std::vector<llvm::Function *> find_insert_points(
-        llvm::CallGraph &call_graph,
+        const llvm::CallGraph &call_graph,
         llvm::Function *entry_point,
-        llvm::Function *function_call
+        const llvm::Function *function_call
 ) {
     std::vector<llvm::Function *> path;
     std::vector<std::vector<llvm::Function *>> all_paths;
@@ -200,7 +198,7 @@ inline std::vector<llvm::Function *> find_insert_points(
     int index = -1;
     for (int i = 0; i < shortest_length; ++i) {
         index++;
-        llvm::Function *current = all_paths[0][i];
+        const llvm::Function *current = all_paths[0][i];
 
         // check if all the paths at index I point to the
         // same function.

@@ -51,45 +51,56 @@ struct PufPatcher : public llvm::PassInfoMixin<PufPatcher> {
         uint32_t function_call_to_replace_address = 0x0;
     };
 
-    Checksum checksum;
     GlobalVariables global_variables;
     LibCDependencies lib_c_dependencies;
+    Checksum checksum;
 
     void init_deps(llvm::Module &M);
 
     void insert_address_calculations(
-            std::unordered_map<std::string, crossover::Function> &compiled_functions_metadata,
-            crossover::EnrollData &enrollment,
-            std::pair<llvm::GlobalVariable *, size_t> &puf_array,
-            std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
-            llvm::CallGraph &call_graph
+            const std::unordered_map<std::string, crossover::FunctionInfo> &compiled_functions_metadata,
+            const crossover::EnrollData &enrollment,
+            const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
+            const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
+            const llvm::CallGraph &call_graph,
+            const std::set<llvm::Function *> &external_entry_points
     );
 
     llvm::PreservedAnalyses run(llvm::Module &M, llvm::ModuleAnalysisManager &);
 
-    llvm::Function *puf_open_ctor(llvm::Module &M, crossover::EnrollData &enrollments, llvm::GlobalVariable *Fd);
+    llvm::Function *puf_open_ctor(
+            llvm::Module &M,
+            const crossover::EnrollData &enrollments,
+            llvm::GlobalVariable *Fd
+    );
 
-    llvm::Function *puf_close_dtor(llvm::Module &M, llvm::GlobalVariable *Fd);
+    llvm::Function *puf_close_dtor(
+            llvm::Module &M,
+            llvm::GlobalVariable *Fd
+    );
 
     std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>>
     replace_calls_with_lookup_table(
             llvm::Module &M,
-            std::vector<llvm::Function *> &funcs
+            const std::vector<llvm::Function *> &funcs
     );
 
     void spawn_puf_thread(
             llvm::Module &M,
-            std::pair<llvm::GlobalVariable *, size_t> &puf_array,
+            const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
             llvm::Function *function_to_add_code,
-            crossover::EnrollData &enrollment
+            const crossover::EnrollData &enrollment
     );
 
-    std::pair<llvm::GlobalVariable *, size_t> create_puf_array(llvm::Module &M, crossover::EnrollData &);
+    std::pair<llvm::GlobalVariable *, size_t> create_puf_array(
+            llvm::Module &M,
+            const crossover::EnrollData &
+    );
 
     void generate_block_until_puf_response(
-            std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
+            const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
             llvm::Function *function_to_add_code,
-            std::vector<FunctionCallReplacementInfo> &replacement_info,
+            const std::vector<FunctionCallReplacementInfo> &replacement_info,
             llvm::GlobalVariable *puf_array
     );
 };

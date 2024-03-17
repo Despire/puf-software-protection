@@ -17,22 +17,30 @@ fi
 LIB_DIR=$ARCH_DIR/lib/rustlib/$HOST_VAR/lib
 RUSTLIBS=$(find ${LIB_DIR}/ -name "*.rlib")
 
-echo "Using $LIB_DIR for rustlib"
-echo "Found RUSTLIBS $RUSTLIBS"
+#echo "Using $LIB_DIR for rustlib"
+#echo "Found RUSTLIBS $RUSTLIBS"
 
 if [ $# -eq 0 ]; then
     echo "Generating LLMV IR..."
     RUSTFLAGS="-C save-temps --emit=llvm-ir" cargo build --release
     rm ${output_path}/*no-opt*
     find ${output_path} -type f | grep -v "rcgu" | xargs rm
+
+    find ${output_path} -type f -name "*.ll" -delete
+    find ${output_path} -type f -name "*.o" -delete
+
+    ${llvm_path}llvm-link -S ${output_path}/*.bc -o ${output_path}/program.bc
+    find ${output_path} -type f -name '*.bc' ! -name 'program.bc' -exec rm {} +
+
     return 
 fi
 
 echo "Compiling LLVM IR to executable..."
-find ${output_path}/ -name '*.ll' | xargs -n 1 ${llvm_path}/llc -relocation-model=pic -filetype=obj
+find ${output_path}/ -name '*.bc' | xargs -n 1 ${llvm_path}/llc -relocation-model=pic -filetype=obj
 
-cc \
+${llvm_path}clang \
 ${output_path}/*.o \
+-Wl,-T script.txt \
 -Wl,--as-needed -L ${LIB_DIR} \
 -Wl,-Bstatic ${RUSTLIBS} \
 -Wl,-Bdynamic -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc \
@@ -43,4 +51,4 @@ ${output_path}/*.o \
 -Wl,--gc-sections -pie \
 -Wl,-z,relro,-z,now \
 -nodefaultlibs \
-${RUSTLIBS}
+${RUSTLIBS} \

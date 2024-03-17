@@ -5,7 +5,11 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 llvm::Function *
-PufPatcher::puf_open_ctor(llvm::Module &M, crossover::EnrollData &enrollments, llvm::GlobalVariable *Fd) {
+PufPatcher::puf_open_ctor(
+        llvm::Module &M,
+        const crossover::EnrollData &enrollments,
+        llvm::GlobalVariable *const Fd
+) {
     auto &ctx = M.getContext();
 
     auto *puf_func = llvm::Function::Create(
@@ -90,7 +94,7 @@ PufPatcher::puf_open_ctor(llvm::Module &M, crossover::EnrollData &enrollments, l
     return puf_func;
 }
 
-llvm::Function *PufPatcher::puf_close_dtor(llvm::Module &M, llvm::GlobalVariable *Fd) {
+llvm::Function *PufPatcher::puf_close_dtor(llvm::Module &M, llvm::GlobalVariable *const Fd) {
     auto &ctx = M.getContext();
     auto *puf_func = llvm::Function::Create(
             llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false),
@@ -111,9 +115,9 @@ llvm::Function *PufPatcher::puf_close_dtor(llvm::Module &M, llvm::GlobalVariable
 
 void PufPatcher::spawn_puf_thread(
         llvm::Module &M,
-        std::pair<llvm::GlobalVariable *, size_t> &puf_array,
-        llvm::Function *function_to_add_code,
-        crossover::EnrollData &enrollments
+        const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
+        llvm::Function *const function_to_add_code,
+        const crossover::EnrollData &enrollments
 ) {
     auto &ctx = M.getContext();
 
