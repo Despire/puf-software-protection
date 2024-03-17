@@ -2,35 +2,20 @@
 // It completed all the decay requests from a program
 // and waits for another program.
 #define PUF_UNUSED   0x0
-// PUF is in a decay state.
-// After the the requested decay timeout times outs
-// the PUF will be back in IDLE state.
-#define PUF_DECAYING 0x1
 // PUF was registerd with a certain PID, but
 // is waiting for the enrollment data before starting.
-#define PUF_WAITING_FOR_ENROLLMENT 0x2
+#define PUF_WAITING_FOR_ENROLLMENT 0x1
 // PUF was successfully generated and is waiting
-// to be read the the process.
-#define PUF_WAITING_FOR_READ       0x3
+// to be read by the process.
+#define PUF_WAITING_FOR_READ       0x2
 
 unsigned int PID              = 0;
 uint8_t      puf_state        = PUF_UNUSED;
 uint8_t*     enrollment_data  = 0x0;
 uint8_t      enrollment_ptr   = 0x0; // points to elements to enrollment_data
 
-static struct delayed_work work_stop_puf;
-
-void stop_puf(struct work_struct *work) {
-    end_puf();
-    puf_state = PUF_WAITING_FOR_READ;
-    printk(KERN_INFO "decay finished, contents ready to be read\n");
-}
-
 void device_cleanup(void) {
-    if (cancel_delayed_work_sync(&work_stop_puf)) {
-        end_puf();
-    }
-    printk(KERN_INFO "device: canceled all delayed work\n");
+    end_puf();
 
     if (PID != 0) {
         printk(KERN_INFO "PID %d stopped using PUF\n", PID);
@@ -45,20 +30,12 @@ void device_cleanup(void) {
     }
     puf_state = PUF_UNUSED;
     printk(KERN_INFO "device: cleanup ok, PUF is now unused\n");
-
 }
 
-void start_next_timeout(void) {
-    uint16_t timeout = consume_16bits_be(&enrollment_ptr, enrollment_data);
-    if (timeout == 0) {
-        enrollment_ptr = 0;
-        timeout = consume_16bits_be(&enrollment_ptr, enrollment_data);
-    }
+void start(void) {
     memset(puf_addr, 0, puf_size);
-    puf_state = PUF_DECAYING;
+    puf_state = PUF_WAITING_FOR_READ;
     start_puf();
-    schedule_delayed_work(&work_stop_puf, msecs_to_jiffies(timeout * 1000));
-    printk(KERN_INFO "PUF starting to decay for: %dsec\n", timeout);
 }
 
 static int puf_open(struct inode *inode, struct file *file) {
@@ -80,16 +57,16 @@ static int puf_release(struct inode * inode, struct file *file) {
 }
 
 static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_t *ppos) {
-    uint32_t    	i                  = 0;
-    uint32_t    	response           = 0x0;
-    uint32_t    	block_ptr          = 0x0;
-    uint32_t    	block              = 0x0;
-    uint32_t    	mask               = 0x0;
-    uint16_t    	memory             = 0x0;
-    uint32_t    	memory_offset      = 0x0;
-    uint8_t     	parity             = 0x0;
-    uint16_t*   	parity_array       = 0x0;
-    uint8_t     	recovered_bits[32] = {0x0};
+    uint32_t            i                  = 0;
+    uint32_t            response           = 0x0;
+    uint32_t            block_ptr          = 0x0;
+    uint32_t            block              = 0x0;
+    uint32_t            mask               = 0x0;
+    uint16_t            memory             = 0x0;
+    uint32_t            memory_offset      = 0x0;
+    uint8_t             parity             = 0x0;
+    uint16_t*           parity_array       = 0x0;
+    uint8_t             recovered_bits[32] = {0x0};
     struct rs_control*	rs_ctrl            = 0x0;
 
     if (puf_state == PUF_WAITING_FOR_READ) {
@@ -115,7 +92,6 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
                 printk(KERN_ERR "failed to read physical RAM, aborting PUF read\n");
                 kfree(parity_array);
                 free_rs(rs_ctrl);
-                start_next_timeout();
                 return -EFAULT;
             }
 
@@ -137,8 +113,6 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
             printk(KERN_ERR "failed to apply ECC\n");
             kfree(parity_array);
             free_rs(rs_ctrl);
-            start_next_timeout();
-            return -EFAULT;
         }
 
         // debug print
@@ -154,16 +128,16 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
             }
         }
 
-        if (copy_to_user(buf, &response, sizeof(uint32_t)) != 0) {
+	printk(KERN_INFO "debug: reconstructed response - %u(hex: 0x%08x)\n", response, response);
+
+        if (copy_to_user(buf, &response, count) != 0) {
             printk(KERN_ERR "failed to give response back to user\n");
             kfree(parity_array);
             free_rs(rs_ctrl);
-            start_next_timeout();
             return -EFAULT;
         }
 
-        start_next_timeout();
-        return sizeof(uint32_t);
+	return count;/
     }
 
     return 0;
@@ -193,21 +167,21 @@ static ssize_t puf_write(struct file *file, const char __user *buf, size_t count
 
     // Enrollment consists of multiple decay timeouts
     // of the following format
-    // |(16bit)timeout|(8bit)parity-bit-count|(16bit)16 integers|(32bit) 32 integers
+    // |(8bit)parity-bit-count|(16bit)16 integers|(32bit) 32 integers
     // Example:
-    // 10|3|3-(16bits)integers|32-(32bits) integers
-    // 20|3|3-(16bits)integers|32-(32bits) integers
+    // 3|3-(16bits)integers|32-(32bits) integers
+    // 3|3-(16bits)integers|32-(32bits) integers
     // ...
     if (puf_state == PUF_WAITING_FOR_ENROLLMENT) {
         printk(KERN_INFO "received enrollment data\n");
-        enrollment_data = (uint8_t *) kzalloc(count + 2, GFP_KERNEL); // +extra bytes for signaling a timeout of 0 (i.e EOF).
+        enrollment_data = (uint8_t *) kzalloc(count, GFP_KERNEL); 
         if (!enrollment_data) {
             printk(KERN_ERR "Failed to alloc buffer for user provided data\n");
             return -ENOMEM;
         }
         memcpy(enrollment_data, data, count);
 
-        start_next_timeout();
+        start();
     }
 
     kfree(data);

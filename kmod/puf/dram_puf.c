@@ -97,7 +97,6 @@ static int __init puf_start(void) {
 
     INIT_DELAYED_WORK(&work_sdram, sdram_refresh);
     INIT_DELAYED_WORK(&work_temp_poll, temp_polling);
-    INIT_DELAYED_WORK(&work_stop_puf, stop_puf);
 
     if (puf_size == 0) {
         printk(KERN_ERR "puf_size needs to be non-empty\n");

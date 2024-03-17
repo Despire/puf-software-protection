@@ -24,7 +24,6 @@ void Checksum::run(
         }
         std::vector<llvm::Function *> targetFuncs = {
                 func,
-                func
         }; // TODO: correctly pick target functions. also the target functions should be in the table.
 
         patch_function(
