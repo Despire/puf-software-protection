@@ -19,6 +19,15 @@
 // and we can directly use the offset of the functions.
 #define BINARY_BASE_OFFSET 0x40000000
 
+// Placeholders for inline assembly that will
+// be patched in the binary. We need placeholders
+// as otherwise the code when compiled will result
+// in different instructions and we need a stable
+// reproducible build.
+#define START_ADDR          0xBBAADDE1
+#define INSTRUCTION_COUNT   0xBBAADDE2
+#define CONSTANT_MULTIPLIER 0xBBAADDE3
+
 struct LibCDependencies {
     // External functions used within the LLVM pass.
     llvm::PointerType *printf_arg_type = nullptr;
@@ -36,6 +45,8 @@ struct LibCDependencies {
     llvm::FunctionCallee write_func;
     llvm::FunctionCallee read_func;
     llvm::FunctionCallee exit_func;
+
+    llvm::FunctionCallee rand_func;
 };
 
 struct GlobalVariables {
@@ -101,7 +112,7 @@ struct PufPatcher : public llvm::PassInfoMixin<PufPatcher> {
             const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
             llvm::Function *function_to_add_code,
             const std::vector<FunctionCallReplacementInfo> &replacement_info,
-            llvm::GlobalVariable *puf_array
+            const std::pair<llvm::GlobalVariable *, size_t> &puf_array
     );
 };
 

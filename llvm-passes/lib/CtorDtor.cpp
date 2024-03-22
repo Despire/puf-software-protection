@@ -144,8 +144,11 @@ void PufPatcher::spawn_puf_thread(
     auto *puf_response_ptr = Builder.CreateAlloca(LLVM_U32(ctx));
     Builder.CreateStore(LLVM_CONST_I32(ctx, 0), puf_response_ptr);
 
+    uint32_t last_sleep = 0x0;
     for (int i = 0; i < enrollments.requests.size(); i++) {
-        Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, enrollments.requests[i])});
+        uint32_t sleep_for = enrollments.requests[i] - last_sleep;
+        last_sleep = enrollments.requests[i];
+        Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, sleep_for)});
         Builder.CreateCall(lib_c_dependencies.read_func,
                            {
                                    Builder.CreateLoad(LLVM_I32(ctx), global_variables.puf_fd),
@@ -162,15 +165,20 @@ void PufPatcher::spawn_puf_thread(
                 }
         );
 
-        Builder.CreateStore(Builder.CreateLoad(LLVM_U32(ctx), puf_response_ptr), puf_array_offset_ptr);
-
         Builder.CreateCall(
                 lib_c_dependencies.printf_func,
-                {format_str_ptr, Builder.CreateLoad(LLVM_U32(ctx), puf_array_offset_ptr)}
+                {format_str_ptr, Builder.CreateLoad(LLVM_U32(ctx), puf_response_ptr)}
         );
         Builder.CreateCall(
                 lib_c_dependencies.fflush_func,
                 {Builder.CreateLoad(global_variables.stdoutput->getValueType(), global_variables.stdoutput)}
+        );
+        Builder.CreateStore(
+                Builder.CreateAdd(
+                        Builder.CreateLoad(LLVM_U32(ctx), puf_response_ptr),
+                        Builder.CreateLoad(LLVM_U32(ctx), puf_array_offset_ptr)
+                ),
+                puf_array_offset_ptr
         );
     }
 

@@ -1,6 +1,5 @@
 use std::fs;
 use std::fs::File;
-use std::path::Path;
 use goblin::elf;
 use goblin::elf::Elf;
 use serde::{Deserialize, Serialize};

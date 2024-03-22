@@ -15,18 +15,14 @@ static llvm::cl::opt<std::string> EnrollmentFile(
 
 static llvm::cl::opt<std::string> OutputFile(
         "outputjson",
-        llvm::cl::desc(
-                "When enabled the LLVM pass will patch the .ll files with the necessary instructions, but without functioning properly."
-                " It will generate an output json file that contains all of the patched functions"),
+        llvm::cl::desc("Will output which functions will be considered for patching. no actual patching is done"),
         llvm::cl::value_desc("string"),
         llvm::cl::Optional
 );
 
 static llvm::cl::opt<std::string> InputFile(
         "inputjson",
-        llvm::cl::desc(
-                "When given an input file the LLVM pass will patch the .ll files with the necessary instructions and with the values"
-                "present in that input file."),
+        llvm::cl::desc("Will patch the IR based from the information of the compiled binary"),
         llvm::cl::value_desc("string"),
         llvm::cl::Optional
 );
@@ -59,11 +55,7 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
     }
 
     std::vector<llvm::Function *> functions_to_patch;
-    for (auto &f : M) {
-        if (f.getName().str() == "__rust_alloc_error_handler") {
-            llvm::outs() << "adding checksum to: " << f.getName().str() << "\n";
-        }
-
+    for (auto &f: M) {
         if (table.find(f.getName().str()) != table.end()) {
             functions_to_patch.push_back(&f);
         }
@@ -371,7 +363,7 @@ void PufPatcher::insert_address_calculations(
                 lookup_table,
                 key.function,
                 info,
-                puf_array.first
+                puf_array
         );
     }
 }
@@ -380,17 +372,18 @@ void PufPatcher::generate_block_until_puf_response(
         const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
         llvm::Function *const function_to_add_code,
         const std::vector<FunctionCallReplacementInfo> &replacement_info,
-        llvm::GlobalVariable *const puf_array
+        const std::pair<llvm::GlobalVariable *, size_t> &puf_array
 ) {
     // Implement
-    // puf_offsets[...]
-    // lookup_table_offsets[...]
-    // reference_values[...]
+    // puf_offsets[...];
+    // lookup_table_offsets[...];
+    // reference_values[...];
     // offset_reader = 0x0;
+    // checksum = 0x0;
     // while (puf_array[puff_offsets[offset_reader]] == 0) {
-    //  keep busy to block.
+    //  checksum += hash(...);
     // }
-    // lookup_table[lookup_table_offsets[offset_reader]] = puf_array[puff_offsets[offset_reader]] + reference_values[offset_reader];
+    // lookup_table[lookup_table_offsets[offset_reader]] = puf_array[puff_offsets[offset_reader]] + reference_values[offset_reader] + checksum;
     auto &ctx = function_to_add_code->getParent()->getContext();
 
     auto &function_entry_block = function_to_add_code->getEntryBlock();
@@ -403,6 +396,33 @@ void PufPatcher::generate_block_until_puf_response(
     );
 
     llvm::IRBuilder<> Builder(new_entry_block);
+
+    auto *triple = Builder.CreateCall(
+            llvm::InlineAsm::get(
+                    llvm::FunctionType::get(
+                            llvm::StructType::get(LLVM_I32(ctx), LLVM_I32(ctx), LLVM_I32(ctx)),
+                            {},
+                            false
+                    ),
+                    ".word " + std::to_string(START_ADDR) + "\n" +
+                    ".word " + std::to_string(INSTRUCTION_COUNT) + "\n" +
+                    ".word " + std::to_string(CONSTANT_MULTIPLIER) + "\n" +
+                    "ldr $0, [pc, #-12]\n" +
+                    "ldr $1, [pc, #-20]\n" +
+                    "ldr $2, [pc, #-28]\n",
+                    "=r,=r,=r,~{memory},~{cc},~{r0},~{r1},~{r2},~{r3},~{r4}",
+                    true
+            ),
+            {}
+    );
+
+    auto *constant_multiplier = Builder.CreateExtractValue(triple, {0});
+    auto *instruction_count = Builder.CreateExtractValue(triple, {1});
+    auto *start_address = Builder.CreateExtractValue(triple, {2});
+
+    // Create checksum = 0x0;
+    auto *checksum_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
+    Builder.CreateStore(LLVM_CONST_I32(ctx, 0), checksum_ptr);
 
     // Create puff_offsets[...]
     auto puf_offsets_typ = llvm::ArrayType::get(LLVM_I32(ctx), replacement_info.size());
@@ -445,8 +465,8 @@ void PufPatcher::generate_block_until_puf_response(
     // Load current index to wait on.
     // puf_array[puf_offsets[offset_reader]]
     auto puf_array_ptr = Builder.CreateInBoundsGEP(
-            puf_array->getValueType(),
-            puf_array,
+            puf_array.first->getValueType(),
+            puf_array.first,
             {
                     LLVM_CONST_I32(ctx, 0),
                     Builder.CreateLoad(
@@ -470,13 +490,24 @@ void PufPatcher::generate_block_until_puf_response(
     auto false_block = llvm::BasicBlock::Create(ctx, "puf_not_loaded", function_to_add_code, &function_entry_block);
     Builder.CreateCondBr(condition, false_block, true_block);
 
-    // if 0 sleep 5 go back.
+    // if 0 calc checksum.
     Builder.SetInsertPoint(false_block);
-    Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, 5)});
+    auto checksum_call = Builder.CreateCall(
+            PufPatcher::checksum.checksum(ctx),
+            {
+                    constant_multiplier, // constant
+                    LLVM_CONST_I32(ctx, 0), // accumulator
+                    Builder.CreateZExt(start_address, LLVM_I64(ctx)), // start
+                    instruction_count, // count
+            }
+    );
+    auto *hash_result = Builder.CreateExtractValue(checksum_call, {0});
+    Builder.CreateStore(Builder.CreateAdd(hash_result, Builder.CreateLoad(LLVM_I32(ctx), checksum_ptr)), checksum_ptr);
+    // loop back
     Builder.CreateBr(loop_header_bb);
 
     // If not 0
-    // calculate lookup_table[func_index] = puf_response + ref_value
+    // calculate lookup_table[func_index] = puf_response + ref_value + checksum
     // increment to process next element
     // else we are done.
     Builder.SetInsertPoint(true_block);
@@ -500,21 +531,24 @@ void PufPatcher::generate_block_until_puf_response(
             }
     );
 
-    // lookup_table[lookup_table_offsets[offset_reader]] = puf_array[puf_offsets[offset_reader]] + reference_values[offset_reader]
+    // lookup_table[lookup_table_offsets[offset_reader]] = puf_array[puf_offsets[offset_reader]] + reference_values[offset_reader] + checksum
     Builder.CreateStore(
             Builder.CreateAdd(
-                    Builder.CreateLoad(LLVM_U32(ctx), puf_array_ptr),
-                    Builder.CreateLoad(
-                            LLVM_U32(ctx),
-                            Builder.CreateInBoundsGEP(
-                                    reference_values_typ,
-                                    reference_value_ptr,
-                                    {
-                                            LLVM_CONST_I32(ctx, 0),
-                                            Builder.CreateLoad(LLVM_U32(ctx), offsets_reader_ptr)
-                                    }
+                    Builder.CreateAdd(
+                            Builder.CreateLoad(LLVM_U32(ctx), puf_array_ptr),
+                            Builder.CreateLoad(
+                                    LLVM_U32(ctx),
+                                    Builder.CreateInBoundsGEP(
+                                            reference_values_typ,
+                                            reference_value_ptr,
+                                            {
+                                                    LLVM_CONST_I32(ctx, 0),
+                                                    Builder.CreateLoad(LLVM_U32(ctx), offsets_reader_ptr)
+                                            }
+                                    )
                             )
-                    )
+                    ),
+                    Builder.CreateLoad(LLVM_U32(ctx), checksum_ptr)
             ),
             lookup_table_ptr
     );
@@ -530,7 +564,8 @@ void PufPatcher::generate_block_until_puf_response(
 
     // If still items to process go back to header else continue
     condition = Builder.CreateICmpEQ(
-            Builder.CreateLoad(LLVM_I32(ctx), offsets_reader_ptr), LLVM_CONST_I32(ctx, replacement_info.size())
+            Builder.CreateLoad(LLVM_I32(ctx), offsets_reader_ptr),
+            LLVM_CONST_I32(ctx, replacement_info.size())
     );
     Builder.CreateCondBr(condition, &function_entry_block, loop_header_bb);
 

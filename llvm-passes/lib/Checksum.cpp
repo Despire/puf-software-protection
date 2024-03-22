@@ -48,9 +48,6 @@ Checksum::patch_function(
         const std::vector<llvm::Function *> &targetFuncs,
         const std::unordered_map<std::string, crossover::FunctionInfo> &allFuncMetadata
 ) noexcept {
-    if (F.getName().str() == "__rust_alloc_error_handler") {
-        llvm::outs() << "adding checksum to: " << F.getName().str() << "\n";
-    }
     uint32_t seed = std::accumulate(F.getName().begin(), F.getName().end(), 0);
     auto rng = RandomRNG(seed);
 
@@ -165,7 +162,7 @@ bne 1b
     return llvm::InlineAsm::get(
             typ,
             checksum,
-            "=r,=r,=r,r,0,1,2,~{r3},~{cc},~{memory}",
+            "=r,=r,=r,r,0,1,2,~{r0},~{r1},~{r2},~{r3},~{r4},~{cc},~{memory}",
             true
     );
 }

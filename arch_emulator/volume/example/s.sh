@@ -17,9 +17,6 @@ fi
 LIB_DIR=$ARCH_DIR/lib/rustlib/$HOST_VAR/lib
 RUSTLIBS=$(find ${LIB_DIR}/ -name "*.rlib")
 
-#echo "Using $LIB_DIR for rustlib"
-#echo "Found RUSTLIBS $RUSTLIBS"
-
 if [ $# -eq 0 ]; then
     echo "Generating LLMV IR..."
     RUSTFLAGS="-C save-temps --emit=llvm-ir" cargo build --release
