@@ -4,7 +4,6 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
-#include "llvm/IR/InlineAsm.h"
 
 static llvm::cl::opt<std::string> EnrollmentFile(
         "enrollment",
@@ -304,17 +303,34 @@ void PufPatcher::insert_address_calculations(
         uint32_t seed = std::accumulate(external_entry.key.begin(), external_entry.key.end(), 0);
         auto rng = RandomRNG(seed);
 
-        for (auto &[function_call_to_replace, path]: paths) {
-            bool emptyPatch =
-                    compiled_functions_metadata.find(function_call_to_replace.key) == compiled_functions_metadata.end();
-            uint32_t function_call_to_replace_address = emptyPatch ?
-                                                        uint32_t(uintptr_t(function_call_to_replace.function))
-                                                                   : // take a placeholder address.
-                                                        compiled_functions_metadata.at(
-                                                                function_call_to_replace.key).base.offset;
+        // collect depth sizes.
+        std::set<size_t> depth_levels;
+        for (auto &item: paths) depth_levels.insert(item.second.size());
+        // assign puf index to wait on based on level of depth a path has
+        // if there are multiple levels of depth then each level waits on a different
+        // puf response, the bigger the depth the later the response of the puf.
+        size_t number_of_depths = depth_levels.size();
+        size_t puf_array_size = puf_array.second;
+        size_t number_of_depths_unlocked_per_puf_response = int(ceil(float(number_of_depths) / float(puf_array_size)));
 
-            // randomly choose at which PUF response in the PUF array this path will wait.
-            int32_t puf_arr_index = random_i32(puf_array.second, rng);
+        // create a map that maps each depth level to a puf index
+        size_t unlocked = 0;
+        size_t mapped_puf_index = 0;
+        std::map<size_t, size_t> depth_to_puf_response;
+        for (size_t item : depth_levels) {
+            depth_to_puf_response[item] = mapped_puf_index;
+            unlocked++;
+            if (unlocked % number_of_depths_unlocked_per_puf_response == 0) {
+                mapped_puf_index++;
+            }
+        }
+
+        for (auto &[function_call_to_replace, path]: paths) {
+            assert(compiled_functions_metadata.find(function_call_to_replace.key) != compiled_functions_metadata.end());
+            uint32_t function_call_to_replace_address = compiled_functions_metadata.at(
+                    function_call_to_replace.key).base.offset;
+
+            int32_t puf_arr_index = depth_to_puf_response[path.size()];
             const crossover::Enrollment *enrollment = enrollments.request_at(puf_arr_index);
             assert(enrollment != nullptr);
             // randomly choose at which function the instruction will be inserted.
@@ -337,8 +353,8 @@ void PufPatcher::insert_address_calculations(
                             puf_arr_index,
                             enrollment->auth_value,
                             function_call_to_replace_address
-                    });
-
+                    }
+            );
         }
     }
 
@@ -363,7 +379,8 @@ void PufPatcher::insert_address_calculations(
                 lookup_table,
                 key.function,
                 info,
-                puf_array
+                puf_array,
+                compiled_functions_metadata
         );
     }
 }
@@ -372,7 +389,8 @@ void PufPatcher::generate_block_until_puf_response(
         const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
         llvm::Function *const function_to_add_code,
         const std::vector<FunctionCallReplacementInfo> &replacement_info,
-        const std::pair<llvm::GlobalVariable *, size_t> &puf_array
+        const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
+        const std::unordered_map<std::string, crossover::FunctionInfo> &compiled_functions_metadata
 ) {
     // Implement
     // puf_offsets[...];
@@ -386,6 +404,17 @@ void PufPatcher::generate_block_until_puf_response(
     // lookup_table[lookup_table_offsets[offset_reader]] = puf_array[puff_offsets[offset_reader]] + reference_values[offset_reader] + checksum;
     auto &ctx = function_to_add_code->getParent()->getContext();
 
+    auto *generated_checksum_func = generate_checksum_func(*function_to_add_code->getParent());
+
+    // choose a random function the checksum will be calculated over
+    std::string s = function_to_add_code->getName().str();
+    uint32_t seed = std::accumulate(s.begin(), s.end(), 0);
+    auto &chosen_function = *RandomElementRNG(
+            compiled_functions_metadata.begin(),
+            compiled_functions_metadata.end(),
+            RandomRNG(seed)
+    );
+
     auto &function_entry_block = function_to_add_code->getEntryBlock();
 
     auto new_entry_block = llvm::BasicBlock::Create(
@@ -397,28 +426,15 @@ void PufPatcher::generate_block_until_puf_response(
 
     llvm::IRBuilder<> Builder(new_entry_block);
 
-    auto *triple = Builder.CreateCall(
-            llvm::InlineAsm::get(
-                    llvm::FunctionType::get(
-                            llvm::StructType::get(LLVM_I32(ctx), LLVM_I32(ctx), LLVM_I32(ctx)),
-                            {},
-                            false
-                    ),
-                    ".word " + std::to_string(START_ADDR) + "\n" +
-                    ".word " + std::to_string(INSTRUCTION_COUNT) + "\n" +
-                    ".word " + std::to_string(CONSTANT_MULTIPLIER) + "\n" +
-                    "ldr $0, [pc, #-12]\n" +
-                    "ldr $1, [pc, #-20]\n" +
-                    "ldr $2, [pc, #-28]\n",
-                    "=r,=r,=r,~{memory},~{cc},~{r0},~{r1},~{r2},~{r3},~{r4}",
-                    true
-            ),
-            {}
-    );
-
-    auto *constant_multiplier = Builder.CreateExtractValue(triple, {0});
-    auto *instruction_count = Builder.CreateExtractValue(triple, {1});
-    auto *start_address = Builder.CreateExtractValue(triple, {2});
+    // Create Start address
+    auto start_address_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
+    Builder.CreateStore(LLVM_CONST_I32(ctx, chosen_function.second.base.offset), start_address_ptr);
+    // Create Count
+    auto count_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
+    Builder.CreateStore(LLVM_CONST_I32(ctx, chosen_function.second.instruction_count), count_ptr);
+    // Create Constant
+    auto constant_m_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
+    Builder.CreateStore(LLVM_CONST_I32(ctx, chosen_function.second.constant), constant_m_ptr);
 
     // Create checksum = 0x0;
     auto *checksum_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
@@ -492,17 +508,12 @@ void PufPatcher::generate_block_until_puf_response(
 
     // if 0 calc checksum.
     Builder.SetInsertPoint(false_block);
-    auto checksum_call = Builder.CreateCall(
-            PufPatcher::checksum.checksum(ctx),
-            {
-                    constant_multiplier, // constant
-                    LLVM_CONST_I32(ctx, 0), // accumulator
-                    Builder.CreateZExt(start_address, LLVM_I64(ctx)), // start
-                    instruction_count, // count
-            }
-    );
-    auto *hash_result = Builder.CreateExtractValue(checksum_call, {0});
-    Builder.CreateStore(Builder.CreateAdd(hash_result, Builder.CreateLoad(LLVM_I32(ctx), checksum_ptr)), checksum_ptr);
+    Builder.CreateCall(generated_checksum_func, {
+            checksum_ptr,
+            start_address_ptr,
+            count_ptr,
+            constant_m_ptr
+    });
     // loop back
     Builder.CreateBr(loop_header_bb);
 

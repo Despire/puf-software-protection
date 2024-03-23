@@ -9,6 +9,8 @@ const PARITY_INT: u32 = 66051;
 
 // Marker for the start followed by count, constant of a checksum block to path
 const START: u32 = 3789400763;
+const COUNT: u32 = 3806177979;
+const CONST: u32 = 3822955195;
 
 #[derive(Serialize, Deserialize)]
 pub struct MetadataRequest {
@@ -135,10 +137,10 @@ fn patch_parity(
         let func_addr = text_section.sh_offset + (sym.st_value - text_section.sh_addr);
         let func_size = sym.st_size;
 
-        println!(
-            "patching function parity: {}, offset: {} size: {}",
-            str_name, func_addr, func_size
-        );
+        // println!(
+        //     "patching function parity: {}, offset: {} size: {}",
+        //     str_name, func_addr, func_size
+        // );
 
         let func_instructions =
             &mut elf_raw_bytes[func_addr as usize..(func_addr + func_size) as usize];
@@ -238,22 +240,22 @@ fn patch_checksum(
         let func_addr = text_section.sh_offset + (sym.st_value - text_section.sh_addr);
         let func_size = sym.st_size;
 
-        let be_instructions = func_be_instructions(
-            elf_raw_bytes,
-            text_section,
-            sym.st_value,
-            sym.st_size
-        );
+        let be_instructions =
+            func_be_instructions(elf_raw_bytes, text_section, sym.st_value, sym.st_size);
         let marker = be_instructions.iter().position(|v| *v == START);
 
         if marker.is_none() {
             continue;
         }
 
-        println!(
-            "patching function checksum: {}, offset: {} size: {}",
-            str_name, func_addr, func_size
-        );
+        assert_eq!(be_instructions[marker.unwrap()], START);
+        assert_eq!(be_instructions[marker.unwrap() + 1], COUNT);
+        assert_eq!(be_instructions[marker.unwrap() + 2], CONST);
+
+        // println!(
+        //     "patching function checksum: {}, offset: {} size: {}",
+        //     str_name, func_addr, func_size
+        // );
 
         let mut rng = rand::thread_rng();
 
@@ -265,12 +267,16 @@ fn patch_checksum(
             text_section,
             target_sym.st_value,
             target_sym.st_size,
-        ).len() as u32;
+        )
+        .len() as u32;
 
-        println!(
-            "\ttarget_function: {} {:x} {} index: {}",
-            target_name, rng_func_start, rng_func_size, marker.unwrap()
-        );
+        // println!(
+        //     "\ttarget_function: {} {:x} {} index: {}",
+        //     target_name,
+        //     rng_func_start,
+        //     rng_func_size,
+        //     marker.unwrap()
+        // );
 
         let start_addr_idx = marker.unwrap() * size_of::<u32>();
         let instruction_count_idx = (marker.unwrap() + 1) * size_of::<u32>();
@@ -290,7 +296,12 @@ fn patch_checksum(
     }
 }
 
-fn func_be_instructions(elf_raw_bytes: &mut [u8], text_section: &SectionHeader, start: u64, size: u64) -> Vec<u32> {
+fn func_be_instructions(
+    elf_raw_bytes: &mut [u8],
+    text_section: &SectionHeader,
+    start: u64,
+    size: u64,
+) -> Vec<u32> {
     let func_addr = text_section.sh_offset + (start - text_section.sh_addr);
     let func_size = size;
 

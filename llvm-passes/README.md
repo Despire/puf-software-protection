@@ -49,12 +49,3 @@ The libraries should now be present in the `lib` folder of the project
 # Use
 The libraries can be used with the `opt` tool that comes installed with LLVM. Examples of using the transformation passes can be seen in the `input` directory where each example has a `compile.sh`
 that uses that specific transformation.
-
-update the `env-vars` (for example in the case of the ubuntu installation above)
-```bash
-#!/bin/bash
-
-export llvm_path="/usr/lib/llvm-17"
-export llvm_interpreter="/usr/lib/llvm-17/bin/lli"
-export llvm_linker="/usr/lib/llvm-17/bin/llc"
-```

@@ -12,7 +12,9 @@ crossover::EnrollData crossover::read_enrollment_data(const std::string &file) {
     nlohmann::json j;
     inputFile >> j;
 
-    return j.get<crossover::EnrollData>();
+    auto e = j.get<crossover::EnrollData>();
+    std::sort(e.requests.begin(), e.requests.end());
+    return e;
 }
 
 std::unordered_map<std::string, crossover::FunctionInfo> crossover::read_func_metadata(const std::string &infile) {

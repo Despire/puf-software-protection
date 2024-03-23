@@ -1,8 +1,8 @@
-use std::fs;
-use std::fs::File;
 use goblin::elf;
 use goblin::elf::Elf;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::fs::File;
 
 #[derive(Serialize, Deserialize)]
 pub struct FunctionBase {
@@ -45,19 +45,27 @@ pub struct Input {
     pub function_metadata: Vec<MetadataRequest>,
 }
 
-pub fn run(elf_path: String, input_path: String, output_path: String) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    elf_path: String,
+    input_path: String,
+    output_path: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     let input = fs::read_to_string(&input_path)?;
     let mut input: Input = serde_json::from_str(&input)?;
 
     let elf_raw_bytes = fs::read(&elf_path)?;
     let elf = Elf::parse(&elf_raw_bytes)?;
 
-    let text_section = elf.section_headers.iter().find(|header| {
-        if let Some(name) = elf.shdr_strtab.get_at(header.sh_name) {
-            return name == ".text";
-        }
-        false
-    }).expect("failed to find .text section of an elf");
+    let text_section = elf
+        .section_headers
+        .iter()
+        .find(|header| {
+            if let Some(name) = elf.shdr_strtab.get_at(header.sh_name) {
+                return name == ".text";
+            }
+            false
+        })
+        .expect("failed to find .text section of an elf");
 
     let functions_metadata: Vec<(String, u32, elf::Sym)> = elf
         .syms
@@ -78,18 +86,22 @@ pub fn run(elf_path: String, input_path: String, output_path: String) -> Result<
         .collect();
 
     // filter our all symbols that are not in the final binary.
-    input.function_metadata = input.function_metadata.iter().filter_map(|p| {
-        let found = functions_metadata.iter().find(|(name, _, _)| {
-            return &p.function == name;
-        });
-        if found.is_some() {
-            return Some(MetadataRequest{
-                function: String::from(&p.function),
-                constant: p.constant
+    input.function_metadata = input
+        .function_metadata
+        .iter()
+        .filter_map(|p| {
+            let found = functions_metadata.iter().find(|(name, _, _)| {
+                return &p.function == name;
             });
-        }
-        None
-    }).collect();
+            if found.is_some() {
+                return Some(MetadataRequest {
+                    function: String::from(&p.function),
+                    constant: p.constant,
+                });
+            }
+            None
+        })
+        .collect();
     assert_eq!(functions_metadata.len(), input.function_metadata.len());
 
     serde_json::to_writer_pretty(File::create(&input_path)?, &input)?;
@@ -99,9 +111,10 @@ pub fn run(elf_path: String, input_path: String, output_path: String) -> Result<
         let func_addr = text_section.sh_offset + (sym.st_value - text_section.sh_addr);
         let func_size = sym.st_size;
 
-        println!("reading function: {}, offset: {} size: {}", str_name, func_addr, func_size);
+        // println!("reading function: {}, offset: {} size: {}", str_name, func_addr, func_size);
 
-        let func_instructions = &elf_raw_bytes[func_addr as usize..(func_addr + func_size) as usize];
+        let func_instructions =
+            &elf_raw_bytes[func_addr as usize..(func_addr + func_size) as usize];
 
         let be_instructions: Vec<u32> = func_instructions
             .chunks(4)
@@ -119,7 +132,9 @@ pub fn run(elf_path: String, input_path: String, output_path: String) -> Result<
     }
 
     let out_file = File::create(output_path)?;
-    let out = Output { function_metadata: c };
+    let out = Output {
+        function_metadata: c,
+    };
     serde_json::to_writer_pretty(out_file, &out)?;
     Ok(())
 }

@@ -19,11 +19,10 @@ struct Checksum {
             const std::unordered_map<std::string, crossover::FunctionInfo> &table
     );
 
-    llvm::InlineAsm *checksum(llvm::LLVMContext &ctx) noexcept;
+    llvm::Function *generate_checksum_func_with_asm(llvm::Module &M);
 
     llvm::BasicBlock *add_checksum(
             llvm::LLVMContext &ctx,
-            bool emptyPatch,
             llvm::Module &M,
             llvm::Function *function,
             const std::vector<llvm::Function *> &targetFuncs,
@@ -32,7 +31,6 @@ struct Checksum {
 
     void patch_function(
             llvm::LLVMContext &ctx,
-            bool emptyPatch,
             llvm::Module &M,
             llvm::Function &F,
             const std::vector<llvm::Function *> &allFuncs,
