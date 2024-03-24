@@ -5,8 +5,11 @@
 #include <set>
 
 #include "Utils.h"
+#include "GraphUtils.h"
 #include "Checksum.h"
 #include "json.hh"
+
+#include "obfuscation/Substitution.h"
 
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/IR/PassManager.h"

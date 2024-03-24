@@ -83,5 +83,4 @@ clean:
 	rm ./metadata.json
 	rm -r .llvm_ir_cache/
 
-
 .PHONY: all generate-ir compile generate-json-checksum patch generate-metadata patch-llvm-ir-from-metadata

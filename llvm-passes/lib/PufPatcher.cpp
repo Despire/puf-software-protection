@@ -1,9 +1,19 @@
 #include "PufPatcher.h"
 
+#include <string>
+
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+
+static llvm::cl::opt<std::string> FunctionsPrefix(
+        "prefix",
+        llvm::cl::desc("when specified it will only consider functions with the given prefix as entry points and any "
+                       "function call within these functions will be used for call graph scrambling."),
+        llvm::cl::value_desc("string"),
+        llvm::cl::Optional
+);
 
 static llvm::cl::opt<std::string> EnrollmentFile(
         "enrollment",
@@ -67,13 +77,26 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
     // Find all external entry points into the IR module.
     auto external_entry_points = find_all_external_entry_points(M, call_graph);
 
-    // Creates a global array where the PUF measurements will be stored.
-    auto puf_array = create_puf_array(M, enrollments);
+    std::vector<llvm::Function *> function_to_patch_filtered(functions_to_patch.begin(), functions_to_patch.end());
+    if (std::string prefix = FunctionsPrefix.getValue(); !prefix.empty()) {
+        auto [entry_points, filtered_functions] = collect_unique_calls_from_functions_with_prefix(
+                call_graph,
+                functions_to_patch,
+                prefix,
+                table,
+                external_entry_points
+        );
+        function_to_patch_filtered = std::move(filtered_functions);
+        external_entry_points = std::move(entry_points);
+    }
 
     // Replaces all calls/invokes in the collected functions and creates a lookup table
     // where each function has it place which will be then computed when receiving the correct PUF response.
     // After this function only the call_graph should be used for identifying the calls.
-    auto lookup_table = replace_calls_with_lookup_table(M, functions_to_patch);
+    auto lookup_table = replace_calls_with_lookup_table(M, function_to_patch_filtered);
+
+    // Creates a global array where the PUF measurements will be stored.
+    auto puf_array = create_puf_array(M, enrollments);
 
     // Given the identified entry points into the IR module.
     // determines at which places the functions addresses in
@@ -98,12 +121,9 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
     // Function call added will not be in the lookup table created above, this is by design.
     spawn_puf_thread(M, puf_array, ctor, enrollments);
 
-    // add checksums of the patched functions.
-    checksum.run(
-            M,
-            functions_to_patch,
-            table
-    );
+    // add checksums to each function that will be patched
+    // in the binary.
+    checksum.run(M, functions_to_patch);
 
     return llvm::PreservedAnalyses::none();
 }
@@ -317,7 +337,7 @@ void PufPatcher::insert_address_calculations(
         size_t unlocked = 0;
         size_t mapped_puf_index = 0;
         std::map<size_t, size_t> depth_to_puf_response;
-        for (size_t item : depth_levels) {
+        for (size_t item: depth_levels) {
             depth_to_puf_response[item] = mapped_puf_index;
             unlocked++;
             if (unlocked % number_of_depths_unlocked_per_puf_response == 0) {
@@ -404,16 +424,19 @@ void PufPatcher::generate_block_until_puf_response(
     // lookup_table[lookup_table_offsets[offset_reader]] = puf_array[puff_offsets[offset_reader]] + reference_values[offset_reader] + checksum;
     auto &ctx = function_to_add_code->getParent()->getContext();
 
-    auto *generated_checksum_func = generate_checksum_func(*function_to_add_code->getParent());
-
     // choose a random function the checksum will be calculated over
     std::string s = function_to_add_code->getName().str();
     uint32_t seed = std::accumulate(s.begin(), s.end(), 0);
+    auto rng = RandomRNG(seed);
     auto &chosen_function = *RandomElementRNG(
             compiled_functions_metadata.begin(),
             compiled_functions_metadata.end(),
-            RandomRNG(seed)
+            rng
     );
+
+    substitution::Obfuscator obfuscator(rng);
+    auto *generated_checksum_func = checksum.generate_checksum_func(*function_to_add_code->getParent());
+    obfuscator.run(*generated_checksum_func);
 
     auto &function_entry_block = function_to_add_code->getEntryBlock();
 
