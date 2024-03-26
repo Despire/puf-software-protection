@@ -11,17 +11,11 @@
   "decay_config": {
     "decay_time_start": 20,
     "incremental_step": 10,
-    "num_of_measurements": 1,
-    "replication": 6
+    "num_of_measurements": 4,
+    "replication": 2
   },
   "enrollment": {
     "name": "enroll.json",
-    "parity_percentage": 30,
-    "timeout_requests": [
-      20,
-      30,
-      20,
-      40
-    ]
+    "parity_percentage": 30
   }
 }

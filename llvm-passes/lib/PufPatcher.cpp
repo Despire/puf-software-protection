@@ -332,6 +332,7 @@ void PufPatcher::insert_address_calculations(
         size_t number_of_depths = depth_levels.size();
         size_t puf_array_size = puf_array.second;
         size_t number_of_depths_unlocked_per_puf_response = int(ceil(float(number_of_depths) / float(puf_array_size)));
+        number_of_depths_unlocked_per_puf_response = number_of_depths_unlocked_per_puf_response + int(ceil(float(number_of_depths_unlocked_per_puf_response) / 2.0));
 
         // create a map that maps each depth level to a puf index
         size_t unlocked = 0;

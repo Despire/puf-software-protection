@@ -20,19 +20,18 @@ all:
 	$(CMAKE) $(CMAKE_FLAGS) -S ./llvm-passes -B $(CMAKE_OUT)
 	$(MAKE) -C $(CMAKE_OUT)
 	cd ./elf-parser && $(CARGO) build --release
-	cd ./puf-hds && $(CARGO) build --release
+	cd ./enrollments/enroll && $(CARGO) build --release
 	$(MAKE) -C ./arch_emulator
-	$(MAKE) patch
 
 patch: 
-	mkdir -p .llvm_ir_cache
+	mkdir -p .build_cache
 	$(MAKE) generate-ir
-	cp ./arch_emulator/volume/example/target/release/deps/*.bc ./.llvm_ir_cache
+	cp ./arch_emulator/volume/example/target/release/deps/*.bc ./.build_cache
 	$(MAKE) dump-functions
 	$(MAKE) compile
 	@while true; do \
 		$(MAKE) generate-metadata; \
-		cp ./.llvm_ir_cache/*.bc ./arch_emulator/volume/example/target/release/deps/; \
+		cp ./.build_cache/*.bc ./arch_emulator/volume/example/target/release/deps/; \
 		$(MAKE) patch-segments; \
 		$(MAKE) compile; \
 		$(MAKE) check-binary-offsets && break; \
@@ -46,41 +45,38 @@ generate-ir:
 
 dump-functions:
 	find ./arch_emulator/volume/example/target/release/deps/ -name '*.bc' | while read -r file; do \
-		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -outputjson=./out.json -S $${file} -o $${file}; \
+		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -outputjson=./.build_cache/functions_to_patch.json -S $${file} -o $${file}; \
 	done
 
 patch-segments:
 	find ./arch_emulator/volume/example/target/release/deps/ -name '*.bc' | while read -r file; do \
-		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -enrollment=./enroll.json -inputjson=./metadata.json -S $${file} -o $${file}; \
+		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -enrollment=./enrollments/enroll.json -inputjson=./.build_cache/functions_to_patch_metadata.json -S $${file} -o $${file}; \
 	done
 
-generate-metadata:
-	./elf-parser/target/release/elf-parser read ./out.json ./metadata.json ./arch_emulator/volume/example/target/release/deps/program
+# this will read out the functions that the LLVM pass wants to patch and see which will be present in 
+# the final binary after all the optimaztions. and will overwrite the functions_to_patch.json with the result.
+generate-metadata: 
+	./elf-parser/target/release/elf-parser read ./.build_cache/functions_to_patch.json ./.build_cache/functions_to_patch_metadata.json ./arch_emulator/volume/example/target/release/deps/program
 
+# This will replace all the markers with actuall function data.
 checksum-patch-binary:
-	./elf-parser/target/release/elf-parser patch ./out.json ./arch_emulator/volume/example/target/release/deps/program
+	./elf-parser/target/release/elf-parser patch ./.build_cache/functions_to_patch.json ./arch_emulator/volume/example/target/release/deps/program
 
+# check if the offset from the requested file match the offsets in the binary
 check-binary-offsets:
-	./elf-parser/target/release/elf-parser check ./out.json ./metadata.json ./arch_emulator/volume/example/target/release/deps/program
+	./elf-parser/target/release/elf-parser check ./.build_cache/functions_to_patch.json ./.build_cache/functions_to_patch_metadata.json ./arch_emulator/volume/example/target/release/deps/program
 
 compile:
 	docker exec $(IMAGE_ID) sh -c "cd ./example && ./s.sh compile"
 
-execute:
-	docker exec $(IMAGE_ID) sh -c "./example/target/release/deps/program"
-
-dump-s:
-	docker exec $(IMAGE_ID) sh -c "objdump -S ./example/target/release/deps/program" | less
-
-copy-llvm-ir:
-	cp ./arch_emulator/volume/example/target/release/deps/*ll .
-
 clean:
 	$(MAKE) -C ./arch_emulator clean
+	$(MAKE) -C ./enrollments clean
 	rm -rf ./arch_emulator/volume/example/target
 	rm -rf $(CMAKE_OUT)
 	rm ./out.json
 	rm ./metadata.json
-	rm -r .llvm_ir_cache/
+	rm -r .build_cache/
+	rm -r ./elf-parser/target
 
-.PHONY: all generate-ir compile generate-json-checksum patch generate-metadata patch-llvm-ir-from-metadata
+.PHONY: all generate-ir compile check-binary-offsets checksum-patch-binary generate-metadata patch-segments dump-functions

@@ -63,6 +63,7 @@ namespace crossover {
     struct EnrollData {
         std::vector<Enrollment> enrollments;
         std::vector<uint32_t> requests;
+        uint32_t read_with_delay;
 
         [[nodiscard]] const Enrollment *request_at(uint32_t request_timeout) const {
             uint32_t decay_timeout = requests[request_timeout];
@@ -87,6 +88,7 @@ namespace crossover {
     static inline void from_json(const nlohmann::json &j, EnrollData &ed) {
         j.at("enrollments").get_to(ed.enrollments);
         j.at("requests").get_to(ed.requests);
+        j.at("read_with_delay").get_to(ed.read_with_delay);
     }
 
     void write_func_requests(

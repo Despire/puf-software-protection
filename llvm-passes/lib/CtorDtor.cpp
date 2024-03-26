@@ -34,10 +34,6 @@ PufPatcher::puf_open_ctor(
     // Handle the error case first, by exiting the program.
     {
         Builder.SetInsertPoint(failed_bb);
-        // TODO: remove this to correcly exit.
-        // Only for testing.
-//        Builder.CreateBr(success_bb);
-
         Builder.CreateCall(lib_c_dependencies.exit_func, {Builder.getInt32(DEV_FAIL)});
         Builder.CreateUnreachable();
     }
@@ -148,7 +144,7 @@ void PufPatcher::spawn_puf_thread(
     for (int i = 0; i < enrollments.requests.size(); i++) {
         uint32_t sleep_for = enrollments.requests[i] - last_sleep;
         last_sleep = enrollments.requests[i];
-        Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, sleep_for)});
+        Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, sleep_for + enrollments.read_with_delay)});
         Builder.CreateCall(lib_c_dependencies.read_func,
                            {
                                    Builder.CreateLoad(LLVM_I32(ctx), global_variables.puf_fd),

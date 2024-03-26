@@ -119,10 +119,6 @@ pub struct EnrollmentConfig {
     pub name: String,
     /// Recover % of the original message
     pub parity_percentage: usize,
-    /// This is a request from the user that can be later used when patching the binary.
-    /// It indicates which timeouts in which order should be executed in the control flow
-    /// of the patched binary.
-    pub timeout_requests: Vec<u32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -159,7 +155,10 @@ impl Config {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct EnrollData {
+    // times at which the PUF request should be performed.
     requests: Vec<u32>,
+    // if not zero add additional delay to when the PUF requests will be performed.
+    read_with_delay: u32,
     enrollments: Vec<Enrollment>,
 }
 
@@ -197,26 +196,12 @@ pub fn generate(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if cfg.enrollment.timeout_requests.is_empty() {
-        println!("Warning: no timeouts specified inside 'enrollment.timeout_requests'");
-    }
-
-    // check if the requested decay times match the enrolled data.
-    for request in &cfg.enrollment.timeout_requests {
-        let mut found = false;
-        for (i, _) in cells.iter().enumerate() {
-            if cfg.decay_config.get_measurement(i) as u32 == *request {
-                found = true;
-            }
-        }
-        if !found {
-            return Err(format!("You requested a decay timeout at {} but no enrollment for this timeout was measured", request))?;
-        }
-    }
-
     let data = EnrollData {
-        enrollments: enroll::prepare(&cfg, cells)?,
-        requests: cfg.enrollment.timeout_requests.clone(),
+        enrollments: enroll::prepare(&cfg, &cells)?,
+        requests: (0..cfg.decay_config.num_of_measurements).map(|i| {
+            (cfg.decay_config.decay_time_start + i * cfg.decay_config.incremental_step) as u32
+        }).collect(),
+        read_with_delay: (cfg.decay_config.incremental_step / 2) as u32
     };
 
     let output_file = File::create(&cfg.enrollment.name)?;
