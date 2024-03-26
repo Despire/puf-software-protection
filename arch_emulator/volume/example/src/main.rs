@@ -1,7 +1,14 @@
 use std::net::{TcpListener, TcpStream};
 use std::io::{Read, Write};
-use hex_literal::hex;
+
+use hex;
 use sha3::{Digest, Sha3_256};
+
+use aes::Aes128;
+use aes::cipher::{
+    BlockCipher, BlockEncrypt, BlockDecrypt, KeyInit,
+    generic_array::GenericArray,
+};
 
 #[no_mangle]
 fn handle_client(mut stream: TcpStream) {
@@ -14,13 +21,7 @@ fn handle_client(mut stream: TcpStream) {
                     println!("Client disconnected");
                     break;
                 }
-                
-                println!("received: {}", String::from_utf8_lossy(&buffer[..]));
-                // Echo back the sha3 sum of the received data
-                let mut hasher = Sha3_256::new();
-                hasher.update(&buffer[..size]);
-                let result = hasher.finalize();
-                stream.write_all(&result[..]).unwrap();
+                work2(&mut stream, &mut buffer[..]);
             }
             Err(_) => {
                 println!("Error reading from client");
@@ -31,7 +32,7 @@ fn handle_client(mut stream: TcpStream) {
 }
 
 fn main() -> std::io::Result<()> {
-    std::thread::spawn(test);
+    std::thread::spawn(work1);
 
     let listener = TcpListener::bind("127.0.0.1:8080")?;
     println!("Echo server listening on port 8080");
@@ -51,10 +52,27 @@ fn main() -> std::io::Result<()> {
 }
 
 #[no_mangle]
-fn test() {
+fn work1() {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(5));
-        println!("Doing somethins...");
+        println!("working...");
+    }
+}
+
+#[no_mangle]
+fn work2(stream: &mut TcpStream, msg: &mut [u8]) {
+    let key = GenericArray::from([8u8; 16]);
+    let cipher = Aes128::new(&key);
+
+    let mut hasher = Sha3_256::new();
+
+    for chunk in &mut msg.chunks_mut(16) {
+        let mut block = GenericArray::from_mut_slice(chunk);
+        cipher.encrypt_block(&mut block);
+        hasher.update(&block[..]);
     }
 
+    let result = hasher.finalize();
+    let hex_result = hex::encode(&result[..]);
+    stream.write_all(hex_result.as_bytes()).unwrap();
 }
