@@ -119,11 +119,11 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
 
     // add code that spawns a detached thread that will perform the PUF readings.
     // Function call added will not be in the lookup table created above, this is by design.
-    spawn_puf_thread(M, puf_array, ctor, enrollments);
+    auto *puf_arr_offset_global = spawn_puf_thread(M, puf_array, ctor, enrollments);
 
     // add checksums to each function that will be patched
     // in the binary.
-    checksum.run(M, functions_to_patch);
+    checksum.run(M, functions_to_patch, puf_arr_offset_global);
 
     return llvm::PreservedAnalyses::none();
 }
@@ -332,7 +332,8 @@ void PufPatcher::insert_address_calculations(
         size_t number_of_depths = depth_levels.size();
         size_t puf_array_size = puf_array.second;
         size_t number_of_depths_unlocked_per_puf_response = int(ceil(float(number_of_depths) / float(puf_array_size)));
-        number_of_depths_unlocked_per_puf_response = number_of_depths_unlocked_per_puf_response + int(ceil(float(number_of_depths_unlocked_per_puf_response) / 2.0));
+        number_of_depths_unlocked_per_puf_response = number_of_depths_unlocked_per_puf_response +
+                                                     int(ceil(float(number_of_depths_unlocked_per_puf_response) / 2.0));
 
         // create a map that maps each depth level to a puf index
         size_t unlocked = 0;
@@ -400,8 +401,7 @@ void PufPatcher::insert_address_calculations(
                 lookup_table,
                 key.function,
                 info,
-                puf_array,
-                compiled_functions_metadata
+                puf_array
         );
     }
 }
@@ -410,8 +410,7 @@ void PufPatcher::generate_block_until_puf_response(
         const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
         llvm::Function *const function_to_add_code,
         const std::vector<FunctionCallReplacementInfo> &replacement_info,
-        const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
-        const std::unordered_map<std::string, crossover::FunctionInfo> &compiled_functions_metadata
+        const std::pair<llvm::GlobalVariable *, size_t> &puf_array
 ) {
     // Implement
     // puf_offsets[...];
@@ -429,14 +428,8 @@ void PufPatcher::generate_block_until_puf_response(
     std::string s = function_to_add_code->getName().str();
     uint32_t seed = std::accumulate(s.begin(), s.end(), 0);
     auto rng = RandomRNG(seed);
-    auto &chosen_function = *RandomElementRNG(
-            compiled_functions_metadata.begin(),
-            compiled_functions_metadata.end(),
-            rng
-    );
-
     substitution::Obfuscator obfuscator(rng);
-    auto *generated_checksum_func = checksum.generate_checksum_func(*function_to_add_code->getParent());
+    auto *generated_checksum_func = checksum.generate_checksum_func_with_asm(*function_to_add_code->getParent());
     obfuscator.run(*generated_checksum_func);
 
     auto &function_entry_block = function_to_add_code->getEntryBlock();
@@ -449,16 +442,6 @@ void PufPatcher::generate_block_until_puf_response(
     );
 
     llvm::IRBuilder<> Builder(new_entry_block);
-
-    // Create Start address
-    auto start_address_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
-    Builder.CreateStore(LLVM_CONST_I32(ctx, chosen_function.second.base.offset), start_address_ptr);
-    // Create Count
-    auto count_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
-    Builder.CreateStore(LLVM_CONST_I32(ctx, chosen_function.second.instruction_count), count_ptr);
-    // Create Constant
-    auto constant_m_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
-    Builder.CreateStore(LLVM_CONST_I32(ctx, chosen_function.second.constant), constant_m_ptr);
 
     // Create checksum = 0x0;
     auto *checksum_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
@@ -532,12 +515,7 @@ void PufPatcher::generate_block_until_puf_response(
 
     // if 0 calc checksum.
     Builder.SetInsertPoint(false_block);
-    Builder.CreateCall(generated_checksum_func, {
-            checksum_ptr,
-            start_address_ptr,
-            count_ptr,
-            constant_m_ptr
-    });
+    Builder.CreateCall(generated_checksum_func, {checksum_ptr});
     // loop back
     Builder.CreateBr(loop_header_bb);
 

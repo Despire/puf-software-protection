@@ -73,7 +73,7 @@ struct PufPatcher : public llvm::PassInfoMixin<PufPatcher> {
 
     llvm::PreservedAnalyses run(llvm::Module &M, llvm::ModuleAnalysisManager &);
 
-    llvm::Function *puf_open_ctor(
+    llvm::BasicBlock *puf_open_ctor(
             llvm::Module &M,
             const crossover::EnrollData &enrollments,
             llvm::GlobalVariable *Fd
@@ -90,10 +90,10 @@ struct PufPatcher : public llvm::PassInfoMixin<PufPatcher> {
             const std::vector<llvm::Function *> &funcs
     );
 
-    void spawn_puf_thread(
+    llvm::GlobalVariable *spawn_puf_thread(
             llvm::Module &M,
             const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
-            llvm::Function *function_to_add_code,
+            llvm::BasicBlock *const bb_to_add_code,
             const crossover::EnrollData &enrollment
     );
 
@@ -106,8 +106,7 @@ struct PufPatcher : public llvm::PassInfoMixin<PufPatcher> {
             const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
             llvm::Function *function_to_add_code,
             const std::vector<FunctionCallReplacementInfo> &replacement_info,
-            const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
-            const std::unordered_map<std::string, crossover::FunctionInfo> &compiled_functions_metadata
+            const std::pair<llvm::GlobalVariable *, size_t> &puf_array
     );
 };
 

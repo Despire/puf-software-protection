@@ -4,7 +4,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
-llvm::Function *
+llvm::BasicBlock *
 PufPatcher::puf_open_ctor(
         llvm::Module &M,
         const crossover::EnrollData &enrollments,
@@ -83,11 +83,36 @@ PufPatcher::puf_open_ctor(
     auto *llvm_arr_ptr = Builder.CreateBitCast(llvm_arr, llvm::PointerType::get(arr_type, 0));
     Builder.CreateCall(lib_c_dependencies.write_func, {fd, llvm_arr_ptr, LLVM_CONST_I32(ctx, array_length_bytes)});
 
+    // "WARM UP" the PUF before actually using it be letting it decay.
+    uint32_t warm_up = 30; // warm up a total of 5 mins
+    auto *counter_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
+    Builder.CreateStore(LLVM_CONST_I32(ctx, 10), counter_ptr);
+
+    auto *loop_header = llvm::BasicBlock::Create(ctx, "loop_header", puf_func);
+    auto *loop_body = llvm::BasicBlock::Create(ctx, "loop_body", puf_func);
+    auto *exit_bb = llvm::BasicBlock::Create(ctx, "exit_block", puf_func);
+
+    Builder.CreateBr(loop_header);
+    Builder.SetInsertPoint(loop_header);
+
+    auto *cond = Builder.CreateICmpEQ(Builder.CreateLoad(LLVM_I32(ctx), counter_ptr), LLVM_CONST_I32(ctx, 0));
+    Builder.CreateCondBr(cond, exit_bb, loop_body);
+    Builder.SetInsertPoint(loop_body);
+    Builder.CreateStore(
+            Builder.CreateSub(Builder.CreateLoad(LLVM_I32(ctx), counter_ptr), LLVM_CONST_I32(ctx, 1)),
+            counter_ptr
+    );
+    Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, warm_up)});
+    // doesn't matter what we write here, any writes reset the PUF.
+    Builder.CreateCall(lib_c_dependencies.write_func, {fd, counter_ptr, LLVM_CONST_I32(ctx, sizeof(uint32_t))});
+    Builder.CreateBr(loop_header);
+
+    Builder.SetInsertPoint(exit_bb);
     Builder.CreateRetVoid();
 
     llvm::appendToGlobalCtors(M, puf_func, std::numeric_limits<int>::min());
 
-    return puf_func;
+    return exit_bb;
 }
 
 llvm::Function *PufPatcher::puf_close_dtor(llvm::Module &M, llvm::GlobalVariable *const Fd) {
@@ -109,13 +134,21 @@ llvm::Function *PufPatcher::puf_close_dtor(llvm::Module &M, llvm::GlobalVariable
     return puf_func;
 }
 
-void PufPatcher::spawn_puf_thread(
+llvm::GlobalVariable *PufPatcher::spawn_puf_thread(
         llvm::Module &M,
         const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
-        llvm::Function *const function_to_add_code,
+        llvm::BasicBlock *const bb_to_add_code,
         const crossover::EnrollData &enrollments
 ) {
     auto &ctx = M.getContext();
+
+    auto *puf_arr_offset_global = new llvm::GlobalVariable(
+            M,
+            LLVM_I32(ctx),
+            false,
+            llvm::GlobalValue::LinkageTypes::InternalLinkage,
+            LLVM_CONST_I32(ctx, 1)
+    );
 
     auto thread_function = llvm::Function::Create(
             llvm::FunctionType::get(
@@ -131,58 +164,111 @@ void PufPatcher::spawn_puf_thread(
 
     llvm::IRBuilder<> Builder(llvm::BasicBlock::Create(thread_function->getContext(), "entry", thread_function));
 
+    // Create sleeps[...]
+    auto sleeps_arr_typ = llvm::ArrayType::get(LLVM_I32(ctx), enrollments.requests.size());
+    auto sleeps_arr_ptr = Builder.CreateAlloca(sleeps_arr_typ);
+
+    // Create puf array iterator = 0x0
+    auto *puf_array_iter_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
+    Builder.CreateStore(LLVM_CONST_I32(ctx, 0), puf_array_iter_ptr);
+
+    std::vector<llvm::Constant *> sleep_arr_data;
+
+    uint32_t last_sleep = 0x0;
+    for (int i = 0; i < enrollments.requests.size(); i++) {
+        uint32_t sleep_for = (enrollments.requests[i] - last_sleep) + enrollments.read_with_delay;
+        last_sleep = enrollments.requests[i] + enrollments.read_with_delay;
+        sleep_arr_data.push_back(LLVM_CONST_I32(ctx, sleep_for));
+    }
+    Builder.CreateStore(llvm::ConstantArray::get(sleeps_arr_typ, sleep_arr_data), sleeps_arr_ptr);
+
+    // Create puf_response  = 0x0;
+    auto *puf_response_ptr = Builder.CreateAlloca(LLVM_U32(ctx));
+    Builder.CreateStore(LLVM_CONST_I32(ctx, 0), puf_response_ptr);
+
     auto &[puf_array_ptr, _] = puf_array;
 
+    // Debug print...
     auto *printf_format_str = Builder.CreateGlobalStringPtr("PUF response: 0x%08x\n");
     auto *format_str_ptr = Builder.CreatePointerCast(printf_format_str, lib_c_dependencies.printf_arg_type,
                                                      "formatStr");
 
-    auto *puf_response_ptr = Builder.CreateAlloca(LLVM_U32(ctx));
-    Builder.CreateStore(LLVM_CONST_I32(ctx, 0), puf_response_ptr);
+    auto *loop_header_bb = llvm::BasicBlock::Create(ctx, "loop_header", thread_function);
+    auto *loop_body_bb = llvm::BasicBlock::Create(ctx, "loop_body", thread_function);
+    auto *loop_footer_bb = llvm::BasicBlock::Create(ctx, "loop_footer", thread_function);
+    auto *exit_bb = llvm::BasicBlock::Create(ctx, "exit", thread_function);
 
-    uint32_t last_sleep = 0x0;
-    for (int i = 0; i < enrollments.requests.size(); i++) {
-        uint32_t sleep_for = enrollments.requests[i] - last_sleep;
-        last_sleep = enrollments.requests[i];
-        Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, sleep_for + enrollments.read_with_delay)});
-        Builder.CreateCall(lib_c_dependencies.read_func,
-                           {
-                                   Builder.CreateLoad(LLVM_I32(ctx), global_variables.puf_fd),
-                                   puf_response_ptr,
-                                   LLVM_CONST_I32(ctx, sizeof(uint32_t))
-                           });
+    Builder.CreateBr(loop_header_bb);
+    Builder.SetInsertPoint(loop_header_bb);
 
-        auto puf_array_offset_ptr = Builder.CreateInBoundsGEP(
-                puf_array_ptr->getValueType(),
-                puf_array_ptr,
-                {
-                        LLVM_CONST_I32(ctx, 0),
-                        LLVM_CONST_I32(ctx, i)
-                }
-        );
+    auto *cond = Builder.CreateICmpSGE(
+            Builder.CreateLoad(LLVM_I32(ctx), puf_array_iter_ptr),
+            LLVM_CONST_I32(ctx, enrollments.requests.size())
+    );
+    Builder.CreateCondBr(cond, exit_bb, loop_body_bb);
 
-        Builder.CreateCall(
-                lib_c_dependencies.printf_func,
-                {format_str_ptr, Builder.CreateLoad(LLVM_U32(ctx), puf_response_ptr)}
-        );
-        Builder.CreateCall(
-                lib_c_dependencies.fflush_func,
-                {Builder.CreateLoad(global_variables.stdoutput->getValueType(), global_variables.stdoutput)}
-        );
-        Builder.CreateStore(
-                Builder.CreateAdd(
-                        Builder.CreateLoad(LLVM_U32(ctx), puf_response_ptr),
-                        Builder.CreateLoad(LLVM_U32(ctx), puf_array_offset_ptr)
-                ),
-                puf_array_offset_ptr
-        );
-    }
+    Builder.SetInsertPoint(loop_body_bb);
+    auto *current_sleep = Builder.CreateLoad(
+            LLVM_I32(ctx),
+            Builder.CreateInBoundsGEP(
+                    sleeps_arr_typ,
+                    sleeps_arr_ptr,
+                    {
+                            LLVM_CONST_I32(ctx, 0),
+                            Builder.CreateLoad(LLVM_I32(ctx), puf_array_iter_ptr)
+                    }
+            )
+    );
+    Builder.CreateCall(lib_c_dependencies.sleep_func, {current_sleep});
+    Builder.CreateCall(lib_c_dependencies.read_func, {
+            Builder.CreateLoad(LLVM_I32(ctx), global_variables.puf_fd),
+            puf_response_ptr,
+            LLVM_CONST_I32(ctx, sizeof(uint32_t))
+    });
+    Builder.CreateCall(lib_c_dependencies.printf_func, {
+            format_str_ptr, Builder.CreateLoad(LLVM_U32(ctx), puf_response_ptr)
+    });
+    Builder.CreateCall(lib_c_dependencies.fflush_func, {
+            Builder.CreateLoad(global_variables.stdoutput->getValueType(), global_variables.stdoutput)
+    });
+    auto puf_array_offset_ptr = Builder.CreateInBoundsGEP(
+            puf_array_ptr->getValueType(),
+            puf_array_ptr,
+            {
+                    LLVM_CONST_I32(ctx, 0),
+                    Builder.CreateLoad(LLVM_I32(ctx), puf_array_iter_ptr)
+            }
+    );
+    Builder.CreateStore(
+            Builder.CreateAdd(
+                    Builder.CreateLoad(LLVM_U32(ctx), puf_response_ptr),
+                    Builder.CreateLoad(LLVM_U32(ctx), puf_array_offset_ptr)
+            ),
+            puf_array_offset_ptr
+    );
 
+    Builder.CreateBr(loop_footer_bb);
+    Builder.SetInsertPoint(loop_footer_bb);
+
+    Builder.CreateStore(
+            Builder.CreateAdd(
+                    Builder.CreateLoad(LLVM_I32(ctx), puf_array_iter_ptr),
+                    Builder.CreateLoad(LLVM_I32(ctx), puf_arr_offset_global)
+            ),
+            puf_array_iter_ptr
+    );
+
+    Builder.CreateBr(loop_header_bb);
+
+    Builder.SetInsertPoint(exit_bb);
+
+    auto *fd = Builder.CreateLoad(global_variables.puf_fd->getValueType(), global_variables.puf_fd);
+    Builder.CreateCall(lib_c_dependencies.close_func, {fd});
     Builder.CreateRet(llvm::ConstantPointerNull::get(llvm::Type::getInt8PtrTy(ctx)));
 
     // Add code to spawn detached thread for the above created function.
     {
-        Builder.SetInsertPoint(&*function_to_add_code->getEntryBlock().getFirstInsertionPt());
+        Builder.SetInsertPoint(&*bb_to_add_code->getFirstInsertionPt());
 
         // Create a struct type with two members: an i32 and an array of 32 i8 values
         auto *union_pthread_attr_t = llvm::StructType::create(
@@ -203,4 +289,6 @@ void PufPatcher::spawn_puf_thread(
                 llvm::ConstantPointerNull::get(llvm::Type::getInt8PtrTy(ctx))
         });
     }
+
+    return puf_arr_offset_global;
 }

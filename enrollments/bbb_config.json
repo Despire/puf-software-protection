@@ -12,10 +12,10 @@
     "decay_time_start": 20,
     "incremental_step": 10,
     "num_of_measurements": 4,
-    "replication": 2
+    "replication": 10
   },
   "enrollment": {
     "name": "enroll.json",
-    "parity_percentage": 30
+    "parity_percentage": 50
   }
 }

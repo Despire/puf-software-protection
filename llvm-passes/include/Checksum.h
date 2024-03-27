@@ -12,7 +12,11 @@
 #define PARITY_INSTRUCTION_INT 66051
 
 struct Checksum {
-    void run(llvm::Module &M, const std::vector<llvm::Function *> &funcs);
+    void run(
+            llvm::Module &M,
+            const std::vector<llvm::Function *> &funcs,
+            llvm::GlobalVariable *puf_arr_iter_global
+    );
 
     llvm::Function *generate_checksum_func_with_asm(llvm::Module &M);
 
@@ -20,16 +24,16 @@ struct Checksum {
             llvm::LLVMContext &ctx,
             llvm::Module &M,
             llvm::Function *function,
-            std::mt19937_64 &rng
+            std::mt19937_64 &rng,
+            llvm::GlobalVariable *puf_arr_iter_global
     ) noexcept;
-
-    llvm::Function *generate_checksum_func(llvm::Module &M);
 
     void patch_function(
             llvm::LLVMContext &ctx,
             llvm::Module &M,
             llvm::Function &F,
-            const std::vector<llvm::Function *> &all_funcs
+            const std::vector<llvm::Function *> &all_funcs,
+            llvm::GlobalVariable *puf_arr_iter_global
     ) noexcept;
 };
 

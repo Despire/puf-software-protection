@@ -2,7 +2,9 @@ take-measurements:
 	cd ./scripts && ./enroll.sh
 
 enroll:
-	mkdir -p enroll_BBB
+	@if [ ! -d "enroll_BBB" ]; then \
+		unzip "enroll_bbb.zip"; \
+	fi
 	./enroll/target/release/enroll ./bbb_config.json
 
 clean:

@@ -22,6 +22,7 @@ all:
 	cd ./elf-parser && $(CARGO) build --release
 	cd ./enrollments/enroll && $(CARGO) build --release
 	$(MAKE) -C ./arch_emulator
+	$(MAKE) -C ./enrollments enroll
 
 patch: 
 	mkdir -p .build_cache
@@ -38,7 +39,7 @@ patch:
 	done
 	$(MAKE) checksum-patch-binary
 	echo "DONE YOU CAN NOW USE YOUR BINARY"
-	rm -r .llvm_ir_cache/
+	rm -r .build_cache/
 
 generate-ir:
 	docker exec $(IMAGE_ID) sh -c "cd ./example && ./s.sh"

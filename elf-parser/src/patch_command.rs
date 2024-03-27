@@ -1,5 +1,6 @@
 use goblin::elf::{Elf, SectionHeader, Sym};
 use rand::seq::SliceRandom;
+use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::mem::size_of;
@@ -137,10 +138,10 @@ fn patch_parity(
         let func_addr = text_section.sh_offset + (sym.st_value - text_section.sh_addr);
         let func_size = sym.st_size;
 
-        // println!(
-        //     "patching function parity: {}, offset: {} size: {}",
-        //     str_name, func_addr, func_size
-        // );
+        println!(
+            "patching function parity: {}, offset: {} size: {}",
+            str_name, func_addr, func_size
+        );
 
         let func_instructions =
             &mut elf_raw_bytes[func_addr as usize..(func_addr + func_size) as usize];
@@ -231,6 +232,9 @@ fn patch_checksum(
     let text_section_start = text_section.sh_addr;
     let text_section_end = text_section.sh_addr + text_section.sh_size;
     assert!(!functions_metadata.is_empty());
+
+    let mut to_be_processed_functions = Vec::from(functions_metadata);
+    let mut processed_functions = Vec::new();
     for (str_name, sym) in all_functions {
         if sym.st_size == 0 || sym.st_value < text_section_start || sym.st_value >= text_section_end
         {
@@ -252,31 +256,40 @@ fn patch_checksum(
         assert_eq!(be_instructions[marker.unwrap() + 1], COUNT);
         assert_eq!(be_instructions[marker.unwrap() + 2], CONST);
 
-        // println!(
-        //     "patching function checksum: {}, offset: {} size: {}",
-        //     str_name, func_addr, func_size
-        // );
+        println!(
+            "patching function checksum: {}, offset: {} size: {}",
+            str_name, func_addr, func_size
+        );
 
         let mut rng = rand::thread_rng();
 
-        let (target_name, target_constant, target_sym) =
-            functions_metadata.choose(&mut rng).unwrap();
+        if to_be_processed_functions.is_empty() {
+            to_be_processed_functions = Vec::from(functions_metadata);
+        }
+
+        processed_functions.push(
+            to_be_processed_functions.remove(
+                to_be_processed_functions.iter().enumerate().choose(&mut rng).map(|(i, _)| i).unwrap()
+            )
+        );
+
+        let (target_name, target_constant, target_sym) = processed_functions.last().unwrap();
+
         let rng_func_start: u32 = target_sym.st_value as u32;
         let rng_func_size: u32 = func_be_instructions(
             elf_raw_bytes,
             text_section,
             target_sym.st_value,
             target_sym.st_size,
-        )
-        .len() as u32;
+        ).len() as u32;
 
-        // println!(
-        //     "\ttarget_function: {} {:x} {} index: {}",
-        //     target_name,
-        //     rng_func_start,
-        //     rng_func_size,
-        //     marker.unwrap()
-        // );
+        println!(
+            "\ttarget_function: {} {:x} {} index: {}",
+            target_name,
+            rng_func_start,
+            rng_func_size,
+            marker.unwrap()
+        );
 
         let start_addr_idx = marker.unwrap() * size_of::<u32>();
         let instruction_count_idx = (marker.unwrap() + 1) * size_of::<u32>();

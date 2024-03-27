@@ -1,6 +1,6 @@
 #!/bin/bash
 
-num_iterations=4
+num_iterations=10
 puf_block_1=0x82a00000
 puf_size=2097152
 
@@ -23,5 +23,7 @@ for num in 20 30 40 50; do
         ssh -q root@beaglebone.local cat /dev/puf_block_1 >  "${folder_name}/BBB_${iter}_${num}sec"
         echo "Done with Iteration $iter!"
     done
+    echo "timeout of 20 before next decay timeout"
+    sleep 20
 done
 echo "finished measurements"
