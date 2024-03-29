@@ -3,7 +3,7 @@
 ## How to use this repository
 
 ### Pre-requisites
-- Docker Desktop install. (NOTE docker desktop is needed as the docker image used by arch_emulator uses a different architecture that needs to be emulated).
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed. (NOTE docker desktop is needed as the docker image used by arch_emulator uses a different architecture that needs to be emulated).
 - LLVM installed and updated llvm-passes/CMakeLists.txt [How-to](./llvm-passes/README.md).
 - Update the `LLVM_OPT` in the [Makefile](./Makefile) to point to the `opt` of the instalation path of LLVM.
 - Rust,Cargo installed.
