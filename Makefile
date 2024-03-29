@@ -21,8 +21,8 @@ all:
 	$(MAKE) -C $(CMAKE_OUT)
 	cd ./elf-parser && $(CARGO) build --release
 	cd ./enrollments/enroll && $(CARGO) build --release
-	$(MAKE) -C ./arch_emulator
 	$(MAKE) -C ./enrollments enroll
+	$(MAKE) -C ./arch_emulator
 
 patch: 
 	mkdir -p .build_cache
