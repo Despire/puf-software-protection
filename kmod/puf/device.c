@@ -1,18 +1,6 @@
-// PUF is in unused state.
-// It completed all the decay requests from a program
-// and waits for another program.
-#define PUF_UNUSED   0x0
-// PUF was registerd with a certain PID, but
-// is waiting for the enrollment data before starting.
-#define PUF_WAITING_FOR_ENROLLMENT 0x1
-// PUF was successfully generated and is waiting
-// to be read by the process.
-#define PUF_WAITING_FOR_READ       0x2
-
 unsigned int PID              = 0;
-uint8_t      puf_state        = PUF_UNUSED;
 uint8_t*     enrollment_data  = 0x0;
-uint8_t      enrollment_ptr   = 0x0; // points to elements to enrollment_data
+uint32_t     enrollment_ptr   = 0x0; // points to elements to enrollment_data
 
 void device_cleanup(void) {
     end_puf();
@@ -40,6 +28,10 @@ void start(void) {
 
 static int puf_open(struct inode *inode, struct file *file) {
     printk(KERN_INFO "puf opened by process with PID: %d\n", current->pid);
+    if (puf_state == PUF_WARM_UP) {
+	printk(KERN_INFO "PUF is in warm up stage, closing %d\n", current->pid);
+        return -1;
+    }
     if (PID == 0) {
         PID = current->pid;
         puf_state = PUF_WAITING_FOR_ENROLLMENT;
@@ -80,13 +72,13 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
         }
 
         for (i = 0; i < 32; i++) {
-            block_ptr = consume_32bits_be(&enrollment_ptr, enrollment_data);
+	    block_ptr = consume_32bits_be(&enrollment_ptr, enrollment_data);
 
             block = block_ptr >> 4;
             mask = block_ptr & 0xf;
             memory_offset = block * sizeof(uint16_t);
 
-            printk(KERN_INFO "debug: block:%d mask: %d ptr: %d memoffset: %d", block, mask, block_ptr, memory_offset);
+            printk(KERN_INFO "debug: block:%u mask: %u ptr: %u memoffset: %u", block, mask, block_ptr, memory_offset);
 
             if (va_phys_r16_be(puf_phys_addr + memory_offset, &memory) != 0) {
                 printk(KERN_ERR "failed to read physical RAM, aborting PUF read\n");
@@ -111,8 +103,6 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
         // TODO: handle error correctly.
         if (decode_rs8(rs_ctrl, recovered_bits, parity_array, 32, NULL, 0, NULL, 0, NULL) < 0) {
             printk(KERN_ERR "failed to apply ECC\n");
-            kfree(parity_array);
-            free_rs(rs_ctrl);
         }
 
         // debug print
@@ -137,7 +127,10 @@ static ssize_t puf_read(struct file *file, char __user *buf, size_t count, loff_
             return -EFAULT;
         }
 
-	return count;/
+	kfree(parity_array);
+        free_rs(rs_ctrl);
+
+	return count;
     }
 
     return 0;
@@ -159,7 +152,9 @@ static ssize_t puf_write(struct file *file, const char __user *buf, size_t count
         return -EFAULT;
     }
 
-    printk(KERN_INFO "Data written to device");
+    printk(KERN_INFO "recieved byte count: %d\n", count);
+    printk(KERN_INFO "Data written to device:\n");
+    printk(KERN_INFO "");
     for (i = 0; i < count; i++) {
         printk(KERN_CONT " %02x", data[i]);
     }
@@ -180,8 +175,12 @@ static ssize_t puf_write(struct file *file, const char __user *buf, size_t count
             return -ENOMEM;
         }
         memcpy(enrollment_data, data, count);
-
         start();
+    }
+    // any write after enrollments resets the PUF.
+    else {
+        printk(KERN_INFO "debug: reseting PUF\n");
+        memset(puf_addr, 0, puf_size);
     }
 
     kfree(data);

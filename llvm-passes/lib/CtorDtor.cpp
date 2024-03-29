@@ -83,30 +83,9 @@ PufPatcher::puf_open_ctor(
     auto *llvm_arr_ptr = Builder.CreateBitCast(llvm_arr, llvm::PointerType::get(arr_type, 0));
     Builder.CreateCall(lib_c_dependencies.write_func, {fd, llvm_arr_ptr, LLVM_CONST_I32(ctx, array_length_bytes)});
 
-    // "WARM UP" the PUF before actually using it be letting it decay.
-    uint32_t warm_up = 30; // warm up a total of 5 mins
-    auto *counter_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
-    Builder.CreateStore(LLVM_CONST_I32(ctx, 10), counter_ptr);
-
-    auto *loop_header = llvm::BasicBlock::Create(ctx, "loop_header", puf_func);
-    auto *loop_body = llvm::BasicBlock::Create(ctx, "loop_body", puf_func);
     auto *exit_bb = llvm::BasicBlock::Create(ctx, "exit_block", puf_func);
 
-    Builder.CreateBr(loop_header);
-    Builder.SetInsertPoint(loop_header);
-
-    auto *cond = Builder.CreateICmpEQ(Builder.CreateLoad(LLVM_I32(ctx), counter_ptr), LLVM_CONST_I32(ctx, 0));
-    Builder.CreateCondBr(cond, exit_bb, loop_body);
-    Builder.SetInsertPoint(loop_body);
-    Builder.CreateStore(
-            Builder.CreateSub(Builder.CreateLoad(LLVM_I32(ctx), counter_ptr), LLVM_CONST_I32(ctx, 1)),
-            counter_ptr
-    );
-    Builder.CreateCall(lib_c_dependencies.sleep_func, {LLVM_CONST_I32(ctx, warm_up)});
-    // doesn't matter what we write here, any writes reset the PUF.
-    Builder.CreateCall(lib_c_dependencies.write_func, {fd, counter_ptr, LLVM_CONST_I32(ctx, sizeof(uint32_t))});
-    Builder.CreateBr(loop_header);
-
+    Builder.CreateBr(exit_bb);
     Builder.SetInsertPoint(exit_bb);
     Builder.CreateRetVoid();
 

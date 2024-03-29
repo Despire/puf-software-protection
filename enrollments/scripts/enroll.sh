@@ -1,11 +1,12 @@
 #!/bin/bash
 
-num_iterations=10
-puf_block_1=0x82a00000
-puf_size=2097152
+num_iterations=3
+puf_block_1=0x84c00000
+puf_size=4194304
 
 echo "starting measurements"
-for num in 20 30 40 50; do
+#for num in 20 30 40 50; do
+for num in 50; do
     sleep_seconds=$num
 
     folder_name="./${sleep_seconds}s"
@@ -22,8 +23,10 @@ for num in 20 30 40 50; do
 
         ssh -q root@beaglebone.local cat /dev/puf_block_1 >  "${folder_name}/BBB_${iter}_${num}sec"
         echo "Done with Iteration $iter!"
+        echo "wait 5 mins before next iteration"
+        sleep 300
     done
-    echo "timeout of 20 before next decay timeout"
-    sleep 20
+    echo "wait 5 mins before the next timeout"
+    sleep 300
 done
 echo "finished measurements"

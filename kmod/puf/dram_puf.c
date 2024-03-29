@@ -29,14 +29,34 @@
 #define REFRESH_PERIOD          55                            // Refresh period for custom SDRAM refresh.
 #define DISABLE_REFRESH         BIT(31)                       // Bit to flip to disable/enable SDRAM refresh.
 
-#define ROW_SIZE                2 * (1<<10)                   // bus_width * page_size
+#define ROW_SIZE                2 * (1<<10)                   // bus_width * page_size.
 #define DEVICE_NAME             "puf"
+
+#define PUF_WARM_UP_PERIOD      150			      // Number of seconds the cells will be in decay.
+#define PUF_WARM_UP_RETRY       4			      // how many times this will be repeated.
+
+// PUF is in warm up stage
+#define PUF_WARM_UP  0x0
+// PUF is in unused state.
+// It completed all the decay requests from a program
+// and waits for another program.
+#define PUF_UNUSED   0x1
+// PUF was registerd with a certain PID, but
+// is waiting for the enrollment data before starting.
+#define PUF_WAITING_FOR_ENROLLMENT 0x2
+// PUF was successfully generated and is waiting
+// to be read by the process.
+#define PUF_WAITING_FOR_READ       0x3
 
 typedef unsigned char uint8_t;
 typedef unsigned int uint32_t;
 typedef int error;
 
-bool user_supplied_address = false;
+uint8_t puf_state  	    = PUF_WARM_UP;
+uint8_t puf_warm_up_retries = PUF_WARM_UP_RETRY;
+bool user_supplied_address  = false;
+
+static struct delayed_work work_warm_up;
 
 /////////////////////////////////////
 //        Reed Solomon ECC   .     //
@@ -92,11 +112,29 @@ int init_puf_buffer(void) {
     return 0;
 }
 
+void warm_up(struct work_struct *work) {
+    struct delayed_work *dwork;
+    
+    dwork = to_delayed_work(work);
+    puf_warm_up_retries -= 1;
+    if (puf_warm_up_retries == 0) {
+        printk(KERN_INFO "PUF warm up completed, can now be used\n");
+	end_puf();
+	puf_state = PUF_UNUSED;
+	return;
+    }
+
+    printk(KERN_INFO "debug: reseting PUF, left: %d\n", puf_warm_up_retries);
+    memset(puf_addr, 0, puf_size);
+    schedule_delayed_work(dwork, msecs_to_jiffies(PUF_WARM_UP_PERIOD * 1000));
+}
+
 static int __init puf_start(void) {
     error err;
 
     INIT_DELAYED_WORK(&work_sdram, sdram_refresh);
     INIT_DELAYED_WORK(&work_temp_poll, temp_polling);
+    INIT_DELAYED_WORK(&work_warm_up, warm_up);
 
     if (puf_size == 0) {
         printk(KERN_ERR "puf_size needs to be non-empty\n");
@@ -131,10 +169,15 @@ static int __init puf_start(void) {
 
     // capture temparature
     start_temp_polling();
+    // start warm up
+    printk(KERN_INFO "Starting PUF warmup");
+    schedule_delayed_work(&work_warm_up, msecs_to_jiffies(PUF_WARM_UP_PERIOD * 1000));
+    start_puf();
     return 0;
 }
 
 static void __exit puf_end(void) {
+    cancel_delayed_work_sync(&work_warm_up);
     stop_temp_polling();
     device_cleanup();
     misc_deregister(&puf_device);

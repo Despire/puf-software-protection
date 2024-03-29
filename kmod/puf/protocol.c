@@ -1,4 +1,4 @@
-uint16_t consume_16bits_be(uint8_t *ptr, uint8_t *enrollment_data) {
+uint16_t consume_16bits_be(uint32_t *ptr, uint8_t *enrollment_data) {
     uint16_t timeout = 0x0;
     uint8_t first_byte, second_byte;
 
@@ -10,7 +10,7 @@ uint16_t consume_16bits_be(uint8_t *ptr, uint8_t *enrollment_data) {
     return timeout;
 }
 
-uint32_t consume_32bits_be(uint8_t *ptr, uint8_t *enrollment_data) {
+uint32_t consume_32bits_be(uint32_t *ptr, uint8_t *enrollment_data) {
     uint32_t block_ptr = 
 	(enrollment_data[*ptr] << 24) |
 	(enrollment_data[(*ptr) + 1] << 16) |
@@ -21,7 +21,7 @@ uint32_t consume_32bits_be(uint8_t *ptr, uint8_t *enrollment_data) {
     return block_ptr;
 }
 
-uint8_t consume_8bits_be(uint8_t *ptr, uint8_t *enrollment_data) {
+uint8_t consume_8bits_be(uint32_t *ptr, uint8_t *enrollment_data) {
     uint8_t parity = 0x0;
 
     parity = enrollment_data[*ptr];

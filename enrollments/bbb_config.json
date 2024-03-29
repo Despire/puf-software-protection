@@ -3,7 +3,7 @@
   "path": "./enroll_BBB",
   "common_prefix": "BBB",
   "puf_config": {
-    "size": 2,
+    "size": 4,
     "unit": "MB",
     "page_size_words": 1024,
     "bus_width": "BW16"
@@ -12,7 +12,7 @@
     "decay_time_start": 20,
     "incremental_step": 10,
     "num_of_measurements": 4,
-    "replication": 10
+    "replication": 3
   },
   "enrollment": {
     "name": "enroll.json",
