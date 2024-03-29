@@ -23,6 +23,15 @@ all:
 	cd ./enrollments/enroll && $(CARGO) build --release
 	$(MAKE) -C ./enrollments enroll
 	$(MAKE) -C ./arch_emulator
+	@echo "waiting for container to be initialized"
+	$(MAKE) wait-for-init
+	@echo "done"
+
+wait-for-init:
+	until [ -f ./arch_emulator/volume/.initialized ]; do \
+		echo "setup.sh is runnning, checking every 5 sec until it finishes"; \
+		sleep 5; \
+	done
 
 patch: 
 	mkdir -p .build_cache
@@ -71,13 +80,13 @@ compile:
 	docker exec $(IMAGE_ID) sh -c "cd ./example && ./s.sh compile"
 
 clean:
-	$(MAKE) -C ./arch_emulator clean
-	$(MAKE) -C ./enrollments clean
+	rm -r .build_cache/
 	rm -rf ./arch_emulator/volume/example/target
 	rm -rf $(CMAKE_OUT)
 	rm ./out.json
 	rm ./metadata.json
-	rm -r .build_cache/
 	rm -r ./elf-parser/target
-
-.PHONY: all generate-ir compile check-binary-offsets checksum-patch-binary generate-metadata patch-segments dump-functions
+	$(MAKE) -C ./enrollments clean
+	$(MAKE) -C ./arch_emulator clean
+	
+.PHONY: all generate-ir compile check-binary-offsets checksum-patch-binary generate-metadata patch-segments dump-functions wait-for-init
