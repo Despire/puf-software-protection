@@ -42,7 +42,7 @@ This kernel module should only be used with a patched binary. You can load this 
 
 `insmod dram_puf.ko puf_phys_addr=0x84c00000 puf_size=4194304`
 
-After which the patched binary will correctly use the kernel module.
+After the kernel module is running, and the warm up phase (10 mins) of the PUF has finished which, the patched binary can use the kernel module.
 
 This kernel module will:
 
