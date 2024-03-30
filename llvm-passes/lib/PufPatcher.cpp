@@ -431,6 +431,9 @@ void PufPatcher::generate_block_until_puf_response(
     substitution::Obfuscator obfuscator(rng);
     auto *generated_checksum_func = checksum.generate_checksum_func_with_asm(*function_to_add_code->getParent());
     obfuscator.run(*generated_checksum_func);
+    if (rng() % 2) {
+        control_flow_flattening::jump_table(*generated_checksum_func, rng);
+    }
 
     auto &function_entry_block = function_to_add_code->getEntryBlock();
 

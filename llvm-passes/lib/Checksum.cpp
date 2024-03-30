@@ -3,6 +3,7 @@
 #include "Checksum.h"
 #include "obfuscation/OpaquePredicates.h"
 #include "obfuscation/Substitution.h"
+#include "obfuscation/ControlFlowFlattening.h"
 
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
@@ -96,7 +97,12 @@ llvm::BasicBlock *Checksum::add_checksum(
     // bounds will be patched in the elf directly.
     for (int i = 0; i < ChecksumsPerFunction.getValue(); i++) {
         auto *checksum_func = generate_checksum_func_with_asm(M);
-        obfuscator.run(*checksum_func);
+        if (rng() % 2) {
+            obfuscator.run(*checksum_func);
+        }
+        if (rng() % 2) {
+            control_flow_flattening::jump_table(*checksum_func, rng);
+        }
         Builder.CreateCall(checksum_func, {checksum_ptr});
     }
 
@@ -292,6 +298,23 @@ llvm::Function *Checksum::generate_checksum_func_with_asm(llvm::Module &M) {
     );
     Builder.CreateStore(LLVM_CONST_I32(ctx, 0), checksum_ptr);
 
+    // calculate start first
+    auto *tmp_recreate_bytes = Builder.CreateAlloca(LLVM_I32(ctx));
+    Builder.CreateStore(
+            Builder.CreateOr(
+                    Builder.CreateAnd(Builder.CreateLoad(LLVM_I32(ctx), memory_ptr), LLVM_CONST_I32(ctx, 0xffff0000)),
+                    Builder.CreateAnd(Builder.CreateLoad(LLVM_I32(ctx), iterator_ptr), LLVM_CONST_I32(ctx, 0x0000ffff))
+            ),
+            tmp_recreate_bytes
+    );
+    Builder.CreateStore(
+            Builder.CreateOr(
+                    Builder.CreateAnd(Builder.CreateLoad(LLVM_I32(ctx), iterator_ptr), LLVM_CONST_I32(ctx, 0xffff0000)),
+                    Builder.CreateAnd(Builder.CreateLoad(LLVM_I32(ctx), memory_ptr), LLVM_CONST_I32(ctx, 0x0000ffff))
+            ),
+            iterator_ptr
+    );
+    Builder.CreateStore(Builder.CreateLoad(LLVM_I32(ctx), tmp_recreate_bytes), memory_ptr);
     Builder.CreateBr(loop_header);
 
     Builder.SetInsertPoint(loop_header);

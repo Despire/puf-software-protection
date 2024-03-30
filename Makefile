@@ -80,13 +80,11 @@ compile:
 	docker exec $(IMAGE_ID) sh -c "cd ./example && ./s.sh compile"
 
 clean:
-	rm -r .build_cache/
 	rm -rf ./arch_emulator/volume/example/target
 	rm -rf $(CMAKE_OUT)
-	rm ./out.json
-	rm ./metadata.json
 	rm -r ./elf-parser/target
 	$(MAKE) -C ./enrollments clean
 	$(MAKE) -C ./arch_emulator clean
+	rm -r .build_cache/
 	
 .PHONY: all generate-ir compile check-binary-offsets checksum-patch-binary generate-metadata patch-segments dump-functions wait-for-init

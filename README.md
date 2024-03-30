@@ -28,9 +28,10 @@ $ make patch
 
 This will produce a protected binary, without actually needing the Beagle Bone Black rec 3C board, in the path `arch_emulator/volume/example/target/release/deps/program`.
 
-![](./example.png "PUF example")
+The following two pictures are from two devices, one for which the program was enrolled for and the other where the same program fails.
 
-NOTE: If you would try to run this example on another board than for which the enrollments were collected it would fail.
+![](./example.png "PUF example")
+![](./example2.png "PUF example")
 
 
 ## Repository structure

@@ -283,12 +283,17 @@ fn patch_checksum(
             target_sym.st_size,
         ).len() as u32;
 
+        let tmp_func_start: u32 = rng_func_start & 0xffff0000 | rng_func_size & 0x0000ffff;
+        let tmp_func_size: u32 = rng_func_size & 0xffff0000 | rng_func_start & 0x0000ffff;
+
         println!(
-            "\ttarget_function: {} {:x} {} index: {}",
+            "\ttarget_function: {} {:x} {} index: {} encoded_start: {:x} encoded_size: {:x}",
             target_name,
             rng_func_start,
             rng_func_size,
-            marker.unwrap()
+            marker.unwrap(),
+            tmp_func_start,
+            tmp_func_size
         );
 
         let start_addr_idx = marker.unwrap() * size_of::<u32>();
@@ -299,10 +304,10 @@ fn patch_checksum(
             &mut elf_raw_bytes[func_addr as usize..(func_addr + func_size) as usize];
 
         func_instructions[start_addr_idx..start_addr_idx + size_of::<u32>()]
-            .copy_from_slice(rng_func_start.to_le_bytes().as_ref());
+            .copy_from_slice(tmp_func_start.to_le_bytes().as_ref());
 
         func_instructions[instruction_count_idx..instruction_count_idx + size_of::<u32>()]
-            .copy_from_slice(rng_func_size.to_le_bytes().as_ref());
+            .copy_from_slice(tmp_func_size.to_le_bytes().as_ref());
 
         func_instructions[constant_idx..constant_idx + size_of::<u32>()]
             .copy_from_slice(target_constant.to_le_bytes().as_ref());

@@ -10,6 +10,7 @@
 #include "json.hh"
 
 #include "obfuscation/Substitution.h"
+#include "obfuscation/ControlFlowFlattening.h"
 
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/IR/PassManager.h"
