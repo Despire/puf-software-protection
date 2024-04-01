@@ -3,7 +3,6 @@
 //! the requested functions.
 mod patch_command;
 mod read_command;
-mod check_command;
 
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -34,7 +33,6 @@ impl std::error::Error for ArgError {
     }
 }
 
-
 #[derive(Serialize, Deserialize)]
 pub struct OffsetRequest {
     #[serde(rename = "function")]
@@ -57,16 +55,6 @@ pub fn new(args: &mut env::Args) -> Result<(), Box<dyn std::error::Error>> {
                 None => return Err(ArgError::new("expected input file path as first argument"))?,
             };
 
-            // where the data from the elf will be stored as as json.
-            let output_path = match programs_args.next() {
-                Some(path) => path,
-                None => {
-                    return Err(ArgError::new(
-                        "expected output file path as second argument",
-                    ))?;
-                }
-            };
-
             // elf path.
             let elf_path = match programs_args.next() {
                 Some(path) => path,
@@ -77,15 +65,23 @@ pub fn new(args: &mut env::Args) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            read_command::run(elf_path, input_path, output_path)
+            read_command::run(elf_path, input_path)
         }
         "patch" => {
             // which functions to patch such that the sums equal to 0.
-            let input_path = match programs_args.next() {
+            let functions_to_patch = match programs_args.next() {
                 Some(path) => path,
                 None => return Err(ArgError::new("expected input file path as first argument"))?,
             };
 
+            let replacements_in_functions = match programs_args.next() {
+                Some(path) => path,
+                None => {
+                    return Err(ArgError::new(
+                        "expected file path to replacemenets for functions",
+                    ))?
+                }
+            };
             // elf path.
             let elf_path = match programs_args.next() {
                 Some(path) => path,
@@ -96,40 +92,13 @@ pub fn new(args: &mut env::Args) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            patch_command::run(elf_path, input_path)
-        }
-        "check" => {
-            // json output from the LLVM pass
-            let functions_to_check = match programs_args.next() {
-                Some(path) => path,
-                None => return Err(ArgError::new("expected input file path as first argument"))?,
-            };
-
-
-            // previous output from the <read> command given the json output of the LLVM pass
-            let previous_elf_parser_output = match programs_args.next() {
-                Some(path) => path,
-                None => {
-                    return Err(ArgError::new(
-                        "expected output file path as second argument",
-                    ))?;
-                }
-            };
-
-            // elf path
-            let elf_path = match programs_args.next() {
-                Some(path) => path,
-                None => {
-                    return Err(ArgError::new(
-                        "expected path to elf file to parse as third argument",
-                    ))?;
-                }
-            };
-
-            check_command::run(elf_path, functions_to_check, previous_elf_parser_output)
+            patch_command::run(elf_path, functions_to_patch, replacements_in_functions)
         }
         _ => {
-            return Err(ArgError::new("command not recognized only <read>, <patch> is supported"))?;
+            return Err(ArgError::new(
+                "command not recognized only <read>, <patch> is supported",
+            ))?;
         }
     }
 }
+

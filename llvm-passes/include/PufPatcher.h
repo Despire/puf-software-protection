@@ -54,7 +54,7 @@ struct PufPatcher : public llvm::PassInfoMixin<PufPatcher> {
         llvm::Function *funcion_call_to_replace = nullptr;
         int32_t puff_arr_index = -1;
         uint32_t puff_response_at_offset = 0x0;
-        uint32_t function_call_to_replace_address = 0x0;
+        std::pair<llvm::GlobalVariable*, std::string> reference_value_marker;
     };
 
     GlobalVariables global_variables;
@@ -64,7 +64,7 @@ struct PufPatcher : public llvm::PassInfoMixin<PufPatcher> {
     void init_deps(llvm::Module &M);
 
     void insert_address_calculations(
-            const std::unordered_map<std::string, crossover::FunctionInfo> &compiled_functions_metadata,
+            llvm::Module &M,
             const crossover::EnrollData &enrollment,
             const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
             const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
@@ -109,6 +109,8 @@ struct PufPatcher : public llvm::PassInfoMixin<PufPatcher> {
             const std::vector<FunctionCallReplacementInfo> &replacement_info,
             const std::pair<llvm::GlobalVariable *, size_t> &puf_array
     );
+
+    std::pair<llvm::GlobalVariable*, std::string> generate_reference_value_asm(llvm::Module &M);
 };
 
 #endif

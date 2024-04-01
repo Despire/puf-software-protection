@@ -1,7 +1,7 @@
 use goblin::elf::{Elf, SectionHeader, Sym};
-use rand::seq::SliceRandom;
 use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::mem::size_of;
 
@@ -12,6 +12,9 @@ const PARITY_INT: u32 = 66051;
 const START: u32 = 3789400763;
 const COUNT: u32 = 3806177979;
 const CONST: u32 = 3822955195;
+
+// Marker for replacement of reference values.
+const REPLACEMENT: u32 = 3839732411;
 
 #[derive(Serialize, Deserialize)]
 pub struct MetadataRequest {
@@ -24,14 +27,43 @@ pub struct MetadataRequest {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Input {
+pub struct FunctionsToPatch {
     #[serde(rename = "function_metadata")]
     pub function_metadata: Vec<MetadataRequest>,
 }
 
-pub fn run(elf_path: String, input: String) -> Result<(), Box<dyn std::error::Error>> {
-    let input = fs::read_to_string(&input)?;
-    let input: Input = serde_json::from_str(&input)?;
+#[derive(Serialize, Deserialize)]
+pub struct Replacement {
+    // puf response used for the function to patch
+    #[serde(rename = "puf_response")]
+    pub puf_response: u32,
+
+    // which function to patch
+    #[serde(rename = "function")]
+    pub function: String,
+
+    // which function offset to subtract from the PUF response.
+    #[serde(rename = "take_offset_from_function")]
+    pub take_offset_from_function: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ReplacementRequest {
+    #[serde(rename = "replacements")]
+    pub replacements: Vec<Replacement>,
+}
+
+pub fn run(
+    elf_path: String,
+    functions_to_patch: String,
+    replacements_in_functions: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let functions_to_patch = fs::read_to_string(&functions_to_patch)?;
+    let functions_to_patch: FunctionsToPatch = serde_json::from_str(&functions_to_patch)?;
+
+    let replacements_in_functions = fs::read_to_string(&replacements_in_functions)?;
+    let replacements_in_functions: ReplacementRequest =
+        serde_json::from_str(&replacements_in_functions)?;
 
     let mut elf_raw_bytes = fs::read(&elf_path)?;
     let elf = Elf::parse(&elf_raw_bytes)?;
@@ -54,7 +86,7 @@ pub fn run(elf_path: String, input: String) -> Result<(), Box<dyn std::error::Er
             if let Some(str_name) = elf.strtab.get_at(sym.st_name) {
                 let str_name = String::from(str_name);
 
-                for request in &input.function_metadata {
+                for request in &functions_to_patch.function_metadata {
                     if request.function == str_name {
                         return Some((str_name, request.constant, sym));
                     }
@@ -64,7 +96,10 @@ pub fn run(elf_path: String, input: String) -> Result<(), Box<dyn std::error::Er
         })
         .filter_map(|x| x)
         .collect();
-    assert_eq!(functions_metadata.len(), input.function_metadata.len());
+    assert_eq!(
+        functions_metadata.len(),
+        functions_to_patch.function_metadata.len()
+    );
 
     let all_functions: Vec<(String, Sym)> = elf
         .syms
@@ -78,6 +113,13 @@ pub fn run(elf_path: String, input: String) -> Result<(), Box<dyn std::error::Er
         })
         .filter_map(|x| x)
         .collect();
+
+    patch_replacements(
+        &all_functions,
+        &text_section,
+        &replacements_in_functions,
+        &mut elf_raw_bytes,
+    );
 
     patch_checksum(
         &all_functions,
@@ -127,6 +169,71 @@ fn eegcd(mut a: u64, x: &mut u64, y: &mut u64) {
 
     *x = x0;
     *y = y0;
+}
+
+fn patch_replacements(
+    all_functions: &[(String, Sym)],
+    text_section: &SectionHeader,
+    replacements_in_functions: &ReplacementRequest,
+    elf_raw_bytes: &mut [u8],
+) {
+    let functions_lookup: HashMap<String, Sym> = all_functions
+        .iter()
+        .map(|(name, sym)| {
+            return Some((name.clone(), sym.clone()));
+        })
+        .filter_map(|x| x)
+        .collect();
+
+    let functions_for_replacement: Vec<(String, Sym, &Replacement)> = all_functions
+        .iter()
+        .map(|(name, sym)| {
+            for req in &replacements_in_functions.replacements {
+                if req.function.as_str() == name {
+                    return Some((name.clone(), sym.clone(), req));
+                }
+            }
+            None
+        })
+        .filter_map(|x| x)
+        .collect();
+
+    for f in &functions_for_replacement {
+        assert!(functions_lookup.contains_key(&f.2.take_offset_from_function));
+        let function_for_offset = functions_lookup
+            .get(&f.2.take_offset_from_function)
+            .unwrap();
+
+        let func_addr = text_section.sh_offset + (f.1.st_value - text_section.sh_addr);
+        let func_size = f.1.st_size;
+
+        let function_for_offset_addr = function_for_offset.st_value;
+        let reference_value = (function_for_offset_addr as u32).wrapping_sub(f.2.puf_response);
+
+        let be_instructions =
+            func_be_instructions(elf_raw_bytes, text_section, f.1.st_value, f.1.st_size);
+
+        let marker = be_instructions.iter().position(|v| *v == REPLACEMENT);
+
+        if marker.is_none() {
+            continue;
+        }
+
+        assert_eq!(be_instructions[marker.unwrap()], REPLACEMENT);
+
+        println!(
+            "replacing in function {} with reference value {} from function {}",
+            &f.0, reference_value, &f.2.take_offset_from_function
+        );
+
+        let start_addr_idx = marker.unwrap() * size_of::<u32>();
+
+        let func_instructions =
+            &mut elf_raw_bytes[func_addr as usize..(func_addr + func_size) as usize];
+
+        func_instructions[start_addr_idx..start_addr_idx + size_of::<u32>()]
+            .copy_from_slice(reference_value.to_le_bytes().as_ref());
+    }
 }
 
 fn patch_parity(
@@ -269,8 +376,13 @@ fn patch_checksum(
 
         processed_functions.push(
             to_be_processed_functions.remove(
-                to_be_processed_functions.iter().enumerate().choose(&mut rng).map(|(i, _)| i).unwrap()
-            )
+                to_be_processed_functions
+                    .iter()
+                    .enumerate()
+                    .choose(&mut rng)
+                    .map(|(i, _)| i)
+                    .unwrap(),
+            ),
         );
 
         let (target_name, target_constant, target_sym) = processed_functions.last().unwrap();
@@ -281,7 +393,8 @@ fn patch_checksum(
             text_section,
             target_sym.st_value,
             target_sym.st_size,
-        ).len() as u32;
+        )
+        .len() as u32;
 
         let tmp_func_start: u32 = rng_func_start & 0xffff0000 | rng_func_size & 0x0000ffff;
         let tmp_func_size: u32 = rng_func_size & 0xffff0000 | rng_func_start & 0x0000ffff;

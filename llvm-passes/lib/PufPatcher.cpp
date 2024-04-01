@@ -7,6 +7,9 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
+// Keep this constant.
+const std::string replacement_file = "replacements.json";
+
 static llvm::cl::opt<std::string> FunctionsPrefix(
         "prefix",
         llvm::cl::desc("when specified it will only consider functions with the given prefix as entry points and any "
@@ -52,16 +55,10 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
             func_names.push_back(f.getName().str());
         }
         crossover::write_func_requests(OutputFile, func_names);
-        return llvm::PreservedAnalyses::all();
     }
 
     auto enrollments = crossover::read_enrollment_data(EnrollmentFile);
-
-    auto table = crossover::read_func_metadata(InputFile);
-    if (table.empty()) {
-        llvm::outs() << "InputFile empty: patching skeleton only" << '\n';
-        return llvm::PreservedAnalyses::all();
-    }
+    auto table = crossover::read_func_response(InputFile);
 
     std::vector<llvm::Function *> functions_to_patch;
     for (auto &f: M) {
@@ -69,7 +66,6 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
             functions_to_patch.push_back(&f);
         }
     }
-
     // Analyse call graph before replacing with indirect calls and before adding
     // PUF thread.
     auto call_graph = llvm::CallGraphAnalysis().run(M, AM);
@@ -102,7 +98,7 @@ llvm::PreservedAnalyses PufPatcher::run(llvm::Module &M, llvm::ModuleAnalysisMan
     // determines at which places the functions addresses in
     // the lookup table should be computed.
     insert_address_calculations(
-            table,
+            M,
             enrollments,
             puf_array,
             lookup_table,
@@ -256,7 +252,7 @@ PufPatcher::replace_calls_with_lookup_table(
 }
 
 void PufPatcher::insert_address_calculations(
-        const std::unordered_map<std::string, crossover::FunctionInfo> &compiled_functions_metadata,
+        llvm::Module &M,
         const crossover::EnrollData &enrollments,
         const std::pair<llvm::GlobalVariable *, size_t> &puf_array,
         const std::pair<llvm::GlobalVariable *, std::map<llvm::Function *, uint32_t>> &lookup_table,
@@ -348,10 +344,6 @@ void PufPatcher::insert_address_calculations(
         }
 
         for (auto &[function_call_to_replace, path]: paths) {
-            assert(compiled_functions_metadata.find(function_call_to_replace.key) != compiled_functions_metadata.end());
-            uint32_t function_call_to_replace_address = compiled_functions_metadata.at(
-                    function_call_to_replace.key).base.offset;
-
             int32_t puf_arr_index = depth_to_puf_response[path.size()];
             const crossover::Enrollment *enrollment = enrollments.request_at(puf_arr_index);
             assert(enrollment != nullptr);
@@ -374,11 +366,13 @@ void PufPatcher::insert_address_calculations(
                             function_call_to_replace.function,
                             puf_arr_index,
                             enrollment->auth_value,
-                            function_call_to_replace_address
+                            generate_reference_value_asm(M)
                     }
             );
         }
     }
+
+    crossover::ReplacementsRequest replacements;
 
     // Finally, patch the functions.
     for (auto &[key, info]: collected_replacement_info) {
@@ -388,13 +382,19 @@ void PufPatcher::insert_address_calculations(
         // and the compiler changes the compiled code in a non-deterministic way.
         for (auto &v: info) {
             llvm::outs() << "Function: " << key.function->getName().str() << "\n"
-                         << "\t" << "Will calculate address: " << v.function_call_to_replace_address << "\n"
+                         << "\t" << "Spawn function: " << v.reference_value_marker.second << "\n"
                          << "\t" << "To access function: " << v.funcion_call_to_replace->getName().str() << "\n"
                          << "\t" << "Will use PUF: (idx) " << v.puff_arr_index << " (value) "
                          << v.puff_response_at_offset
                          << "\n"
                          << "\t" << "Will replace address at index: "
                          << lookup_table.second.at(v.funcion_call_to_replace) << "\n";
+
+            replacements.replacements.push_back(crossover::Replacement{
+                    .puf_response = v.puff_response_at_offset,
+                    .function = v.reference_value_marker.second,
+                    .take_offset_from_function = v.funcion_call_to_replace->getName().str()
+            });
         }
 
         generate_block_until_puf_response(
@@ -404,6 +404,9 @@ void PufPatcher::insert_address_calculations(
                 puf_array
         );
     }
+
+    // create a JSON from the collected_replacement_info
+    crossover::write_replacements_requests(replacement_file, replacements);
 }
 
 void PufPatcher::generate_block_until_puf_response(
@@ -464,20 +467,39 @@ void PufPatcher::generate_block_until_puf_response(
 
     std::vector<llvm::Constant *> puf_offsets_data;
     std::vector<llvm::Constant *> lookup_table_offsets_data;
-    std::vector<llvm::Constant *> reference_values_data;
 
     for (auto &info: replacement_info) {
         assert(lookup_table.second.find(info.funcion_call_to_replace) != lookup_table.second.end());
+        Builder.CreateStore(
+                Builder.CreateLoad(
+                        LLVM_I32(ctx),
+                        Builder.CreateLoad(
+                                llvm::PointerType::getInt8PtrTy(ctx),
+                                Builder.CreateInBoundsGEP(
+                                        info.reference_value_marker.first->getValueType(),
+                                        info.reference_value_marker.first,
+                                        {
+                                                LLVM_CONST_I32(ctx, 0),
+                                                LLVM_CONST_I32(ctx, 0)
+                                        }
+                                )
+                        )
+                ),
+                Builder.CreateInBoundsGEP(
+                        reference_values_typ,
+                        reference_value_ptr,
+                        {LLVM_CONST_I32(ctx, 0),
+                         LLVM_CONST_I32(ctx, puf_offsets_data.size())} // use the other data for indexing
+                )
+        );
+
         puf_offsets_data.push_back(LLVM_CONST_I32(ctx, info.puff_arr_index));
         lookup_table_offsets_data.push_back(LLVM_CONST_I32(ctx, lookup_table.second.at(info.funcion_call_to_replace)));
-        reference_values_data.push_back(
-                LLVM_CONST_I32(ctx, info.function_call_to_replace_address - info.puff_response_at_offset));
     }
 
     Builder.CreateStore(llvm::ConstantArray::get(puf_offsets_typ, puf_offsets_data), puf_offsets_ptr);
     Builder.CreateStore(llvm::ConstantArray::get(lookup_table_offsets_typ, lookup_table_offsets_data),
                         lookup_table_offsets_ptr);
-    Builder.CreateStore(llvm::ConstantArray::get(reference_values_typ, reference_values_data), reference_value_ptr);
 
     // Create offset_reader = 0x0
     auto *offsets_reader_ptr = Builder.CreateAlloca(LLVM_I32(ctx));
@@ -586,6 +608,73 @@ void PufPatcher::generate_block_until_puf_response(
     Builder.CreateCondBr(condition, &function_entry_block, loop_header_bb);
 
     assert(&function_to_add_code->getEntryBlock() == new_entry_block);
+}
+
+std::pair<llvm::GlobalVariable *, std::string> PufPatcher::generate_reference_value_asm(llvm::Module &M) {
+    static int i = 0;
+    auto &ctx = M.getContext();
+
+    std::string function_name = "________rv_a" + std::to_string(i++);
+    std::string reference_label_name = function_name + "ref";
+
+    llvm::Function *reference_value_function = llvm::Function::Create(
+            llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false),
+            llvm::Function::LinkageTypes::InternalLinkage,
+            function_name,
+            M
+    );
+
+    reference_value_function->addFnAttr(llvm::Attribute::NoInline);
+    reference_value_function->addFnAttr(llvm::Attribute::OptimizeNone);
+
+    llvm::BasicBlock *entry_block = llvm::BasicBlock::Create(
+            reference_value_function->getContext(),
+            "entry",
+            reference_value_function
+    );
+
+    llvm::IRBuilder<> Builder(entry_block);
+
+    // create label
+    auto *reference_value_label_global = new llvm::GlobalVariable(
+            M,
+            llvm::ArrayType::get(LLVM_I8(ctx), 0),
+            false,
+            llvm::GlobalValue::LinkageTypes::ExternalLinkage,
+            nullptr,
+            reference_label_name
+    );
+
+    auto label_addresses_global = new llvm::GlobalVariable(
+            M,
+            llvm::ArrayType::get(llvm::PointerType::getInt8PtrTy(ctx), 1),
+            false,
+            llvm::GlobalValue::LinkageTypes::InternalLinkage,
+            llvm::ConstantArray::get(
+                    llvm::ArrayType::get(llvm::PointerType::getInt8PtrTy(ctx), 1),
+                    {reference_value_label_global}
+            )
+    );
+    label_addresses_global->setDSOLocal(true);
+    label_addresses_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
+
+    Builder.CreateCall(
+            llvm::InlineAsm::get(
+                    llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false),
+                    reference_label_name + ":" + ".word " + std::to_string(REFERENCE_VALUE_MARK),
+                    "",
+                    true
+            ),
+            {}
+    );
+    Builder.CreateRetVoid();
+
+    llvm::appendToCompilerUsed(M, {reference_value_function});
+
+    return {
+            label_addresses_global,
+            function_name
+    };
 }
 
 //------------------------------------------------------

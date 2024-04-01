@@ -18,6 +18,10 @@
 #define INSTRUCTION_COUNT   0xBBAADDE2
 #define CONSTANT_MULTIPLIER 0xBBAADDE3
 
+// Placeholder for inline assembly that will
+// be patched in the binary.
+#define REFERENCE_VALUE_MARK 0xBBAADDE4
+
 #define LLVM_I8(ctx)        llvm::IntegerType::getInt8Ty(ctx)
 #define LLVM_I16(ctx)       llvm::IntegerType::getInt16Ty(ctx)
 #define LLVM_I32(ctx)       llvm::IntegerType::getInt32Ty(ctx)

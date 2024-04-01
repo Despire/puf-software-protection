@@ -6,7 +6,6 @@ ifeq ($(UNAME_S),Darwin)
 	LIB_EXT := .dylib
 endif
 
-
 # MODIFY THIS BASED WHERE YOU HAVE opt
 LLVM_OPT=/opt/homebrew/opt/llvm@17/bin/opt
 
@@ -33,48 +32,67 @@ wait-for-init:
 		sleep 5; \
 	done
 
-patch: 
+patch:
 	mkdir -p .build_cache
 	$(MAKE) generate-ir
 	cp ./arch_emulator/volume/example/target/release/deps/*.bc ./.build_cache
-	$(MAKE) dump-functions
+	$(MAKE) patch-empty
 	$(MAKE) compile
-	@while true; do \
-		$(MAKE) generate-metadata; \
-		cp ./.build_cache/*.bc ./arch_emulator/volume/example/target/release/deps/; \
-		$(MAKE) patch-segments; \
-		$(MAKE) compile; \
-		$(MAKE) check-binary-offsets && break; \
-	done
-	$(MAKE) checksum-patch-binary
+	$(MAKE) fix-up-functions
+	cp ./.build_cache/*.bc ./arch_emulator/volume/example/target/release/deps
+	$(MAKE) patch-puf
+	mv replacements.json ./.build_cache/
+	$(MAKE) compile
+	$(MAKE) patch-binary
 	echo "DONE YOU CAN NOW USE YOUR BINARY"
-	rm -r .build_cache/
+	rm -r ./.build_cache/
+
+patch-prefix:
+	mkdir -p .build_cache
+	$(MAKE) generate-ir
+	cp ./arch_emulator/volume/example/target/release/deps/*.bc ./.build_cache
+	$(MAKE) patch-empty-prefix
+	$(MAKE) compile
+	$(MAKE) fix-up-functions
+	cp ./.build_cache/*.bc ./arch_emulator/volume/example/target/release/deps
+	$(MAKE) patch-puf-prefix
+	mv replacements.json ./.build_cache/
+	$(MAKE) compile
+	$(MAKE) patch-binary
+	echo "DONE YOU CAN NOW USE YOUR BINARY"
+	rm -r ./.build_cache/
 
 generate-ir:
 	docker exec $(IMAGE_ID) sh -c "cd ./example && ./s.sh"
 
-dump-functions:
+patch-empty-prefix:
 	find ./arch_emulator/volume/example/target/release/deps/ -name '*.bc' | while read -r file; do \
-		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -outputjson=./.build_cache/functions_to_patch.json -S $${file} -o $${file}; \
+		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -enrollment=./enrollments/enroll.json -outputjson=./.build_cache/functions_to_patch.json -inputjson=./.build_cache/functions_to_patch.json -prefix=handle -S $${file} -o $${file}; \
 	done
 
-patch-segments:
+patch-puf-prefix:
 	find ./arch_emulator/volume/example/target/release/deps/ -name '*.bc' | while read -r file; do \
-		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -enrollment=./enrollments/enroll.json -inputjson=./.build_cache/functions_to_patch_metadata.json -S $${file} -o $${file}; \
+		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -enrollment=./enrollments/enroll.json -inputjson=./.build_cache/functions_to_patch.json -prefix=handle -S $${file} -o $${file}; \
+	done
+
+patch-empty:
+	find ./arch_emulator/volume/example/target/release/deps/ -name '*.bc' | while read -r file; do \
+		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -enrollment=./enrollments/enroll.json -outputjson=./.build_cache/functions_to_patch.json -inputjson=./.build_cache/functions_to_patch.json -S $${file} -o $${file}; \
+	done
+
+patch-puf:
+	find ./arch_emulator/volume/example/target/release/deps/ -name '*.bc' | while read -r file; do \
+		$(LLVM_OPT) -load-pass-plugin $(CMAKE_OUT)/lib/libPufPatcher$(LIB_EXT) -passes=pufpatcher -enrollment=./enrollments/enroll.json -inputjson=./.build_cache/functions_to_patch.json -S $${file} -o $${file}; \
 	done
 
 # this will read out the functions that the LLVM pass wants to patch and see which will be present in 
 # the final binary after all the optimaztions. and will overwrite the functions_to_patch.json with the result.
-generate-metadata: 
-	./elf-parser/target/release/elf-parser read ./.build_cache/functions_to_patch.json ./.build_cache/functions_to_patch_metadata.json ./arch_emulator/volume/example/target/release/deps/program
+fix-up-functions: 
+	./elf-parser/target/release/elf-parser read ./.build_cache/functions_to_patch.json ./arch_emulator/volume/example/target/release/deps/program
 
-# This will replace all the markers with actuall function data.
-checksum-patch-binary:
-	./elf-parser/target/release/elf-parser patch ./.build_cache/functions_to_patch.json ./arch_emulator/volume/example/target/release/deps/program
-
-# check if the offset from the requested file match the offsets in the binary
-check-binary-offsets:
-	./elf-parser/target/release/elf-parser check ./.build_cache/functions_to_patch.json ./.build_cache/functions_to_patch_metadata.json ./arch_emulator/volume/example/target/release/deps/program
+# This will replace all the markers with actuall data.
+patch-binary:
+	./elf-parser/target/release/elf-parser patch ./.build_cache/functions_to_patch.json ./.build_cache/replacements.json ./arch_emulator/volume/example/target/release/deps/program
 
 compile:
 	docker exec $(IMAGE_ID) sh -c "cd ./example && ./s.sh compile"
@@ -87,4 +105,4 @@ clean:
 	$(MAKE) -C ./arch_emulator clean
 	rm -r .build_cache/
 	
-.PHONY: all generate-ir compile check-binary-offsets checksum-patch-binary generate-metadata patch-segments dump-functions wait-for-init
+.PHONY: all generate-ir compile patch-binary generate-metadata patch-puf patch-empty wait-for-init

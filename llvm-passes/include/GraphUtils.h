@@ -214,7 +214,7 @@ std::vector<llvm::Function *>
         llvm::CallGraph &call_graph,
         const std::vector<llvm::Function *> &all_module_functions,
         const std::string &function_prefix,
-        std::unordered_map<std::string, crossover::FunctionInfo> &compiled_functions_metadata,
+        std::unordered_map<std::string, crossover::MetadataRequest> &compiled_functions,
         std::set<llvm::Function *> &all_external_entry_points
 ) {
     std::set<llvm::Function *> requested_entry_points;
@@ -230,7 +230,7 @@ std::vector<llvm::Function *>
     {
         std::set<llvm::Function *> to_erase;
         for (auto &f: requested_entry_points_unique_calls) {
-            if (compiled_functions_metadata.find(f->getName().str()) == compiled_functions_metadata.end()) {
+            if (compiled_functions.find(f->getName().str()) == compiled_functions.end()) {
                 to_erase.insert(f);
             }
         }
