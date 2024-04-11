@@ -1,5 +1,7 @@
 # puf-software-protection
 
+![](./puf-scheme.pdf)
+
 ## How to use this repository
 
 ### Pre-requisites
