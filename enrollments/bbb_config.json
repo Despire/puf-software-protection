@@ -12,7 +12,7 @@
     "decay_time_start": 20,
     "incremental_step": 10,
     "num_of_measurements": 4,
-    "replication": 3
+    "replication": 4
   },
   "enrollment": {
     "name": "enroll.json",
