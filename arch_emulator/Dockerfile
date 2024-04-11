@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     build-essential \
-    gdb \
+    zip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust using rustup
