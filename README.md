@@ -1,6 +1,6 @@
 # puf-software-protection
 
-![](./puf-scheme.png)
+![](./scheme.png "PUF scheme")
 
 ## How to use this repository
 
