@@ -28,7 +28,7 @@ all:
 
 wait-for-init:
 	until [ -f ./arch_emulator/volume/.initialized ]; do \
-		echo "setup.sh is runnning, checking every 5 sec until it finishes"; \
+		echo "setup.sh is runnning , checking every 5 sec until it finishes."; \
 		sleep 5; \
 	done
 
