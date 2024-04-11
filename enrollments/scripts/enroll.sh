@@ -1,6 +1,6 @@
 #!/bin/bash
 
-replication=3
+replication=4
 puf_start_address=0x84c00000
 puf_size=4194304
 
@@ -23,10 +23,10 @@ for num in 50; do # "num_of_measurements (used in the JSON config, i.e. this wou
 
         ssh -q root@beaglebone.local cat /dev/puf_block_1 >  "${folder_name}/BBB_${iter}_${num}sec"
         echo "Done with Iteration $iter!"
-        echo "wait 5 mins before next iteration"
-        sleep 300
+        echo "wait 6 mins before next iteration"
+        sleep 360
     done
-    echo "wait 5 mins before the next timeout"
-    sleep 300
+    echo "wait 6 mins before the next timeout"
+    sleep 360
 done
 echo "finished measurements"

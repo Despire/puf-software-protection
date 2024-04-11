@@ -198,10 +198,12 @@ pub fn generate(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let data = EnrollData {
         enrollments: enroll::prepare(&cfg, &cells)?,
-        requests: (0..cfg.decay_config.num_of_measurements).map(|i| {
-            (cfg.decay_config.decay_time_start + i * cfg.decay_config.incremental_step) as u32
-        }).collect(),
-        read_with_delay: (cfg.decay_config.incremental_step / 2) as u32
+        requests: (0..cfg.decay_config.num_of_measurements)
+            .map(|i| {
+                (cfg.decay_config.decay_time_start + i * cfg.decay_config.incremental_step) as u32
+            })
+            .collect(),
+        read_with_delay: 0,
     };
 
     let output_file = File::create(&cfg.enrollment.name)?;

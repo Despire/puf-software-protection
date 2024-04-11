@@ -74,7 +74,11 @@ pub fn prepare(
                 }
             }
 
-            let mut parity = vec![0u16; (AUTH_VALUE_SIZE as f64 * (cfg.enrollment.parity_percentage as f64 / 100.)) as usize];
+            let mut parity = vec![
+                0u16;
+                (AUTH_VALUE_SIZE as f64 * (cfg.enrollment.parity_percentage as f64 / 100.))
+                    as usize
+            ];
 
             let control_ptr = reed_solomon::init(&parity);
             if control_ptr.is_null() {
