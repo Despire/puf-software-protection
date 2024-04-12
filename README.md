@@ -2,6 +2,8 @@
 
 ![](./scheme.png "PUF scheme")
 
+Showcase:
+
 [![Showcase](https://img.youtube.com/vi/hh7dY71npVY/0.jpg)](https://www.youtube.com/watch?v=hh7dY71npVY)
 
 ## How to use this repository
