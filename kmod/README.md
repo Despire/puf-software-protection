@@ -27,7 +27,7 @@ and one can dump the decayed cells using the `cat /dev/puf_block_1` command ment
 To load the kernel module you would execute the following command (given the address and size
 of the memory region from the above alloc sysram kernel module).
 
-`insmod dram_puf.ko puf_start_address=0x84c00000 puf_block_1_size=4194304`
+`insmod dram_puf.ko puf_block_1=0x84c00000 puf_block_1_size=4194304`
 
 After loading in `dmesg` you would see the exact same output as with the `alloc_sysram` module.
 
