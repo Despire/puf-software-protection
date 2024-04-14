@@ -1,19 +1,16 @@
-use std::net::{TcpListener, TcpStream};
 use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 
 use hex;
 use sha3::{Digest, Sha3_256};
 
+use aes::cipher::{generic_array::GenericArray, BlockCipher, BlockDecrypt, BlockEncrypt, KeyInit};
 use aes::Aes128;
-use aes::cipher::{
-    BlockCipher, BlockEncrypt, BlockDecrypt, KeyInit,
-    generic_array::GenericArray,
-};
 
 #[no_mangle]
 fn handle_client(mut stream: TcpStream) {
     let mut buffer = [0; 1024];
-    
+
     loop {
         match stream.read(&mut buffer) {
             Ok(size) => {
@@ -40,7 +37,7 @@ fn main() -> std::io::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                handle_client(stream);
+                std::thread::spawn(|| handle_client(stream));
             }
             Err(e) => {
                 eprintln!("Error accepting client: {}", e);
