@@ -1,7 +1,7 @@
 use goblin::elf::{Elf, SectionHeader, Sym};
 use rand::prelude::IteratorRandom;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::mem::size_of;
 
@@ -79,15 +79,20 @@ pub fn run(
         })
         .expect("failed to find .text section of an elf");
 
+    let mut processed: HashSet<String> = HashSet::new();
     let functions_metadata: Vec<(String, u32, Sym)> = elf
         .syms
         .iter()
         .map(|sym| {
             if let Some(str_name) = elf.strtab.get_at(sym.st_name) {
                 let str_name = String::from(str_name);
+                if processed.contains(&str_name) {
+                    return None;
+                }
 
                 for request in &functions_to_patch.function_metadata {
                     if request.function == str_name {
+                        processed.insert(str_name.clone());
                         return Some((str_name, request.constant, sym));
                     }
                 }

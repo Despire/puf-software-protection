@@ -1,6 +1,7 @@
 use goblin::elf;
 use goblin::elf::Elf;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 
@@ -27,15 +28,20 @@ pub fn run(elf_path: String, input_path: String) -> Result<(), Box<dyn std::erro
     let elf_raw_bytes = fs::read(&elf_path)?;
     let elf = Elf::parse(&elf_raw_bytes)?;
 
+    let mut processed: HashSet<String> = HashSet::new();
     let functions_to_patch: Vec<(String, u32, elf::Sym)> = elf
         .syms
         .iter()
         .map(|sym| {
             if let Some(str_name) = elf.strtab.get_at(sym.st_name) {
                 let str_name = String::from(str_name);
+                if processed.contains(&str_name) {
+                    return None;
+                }
 
                 for request in &input.function_metadata {
                     if request.function == str_name {
+                        processed.insert(str_name.clone());
                         return Some((str_name, request.constant, sym));
                     }
                 }
